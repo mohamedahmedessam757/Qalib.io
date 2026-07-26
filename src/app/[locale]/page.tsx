@@ -2,13 +2,10 @@
 
 import { Link } from "@/i18n/navigation";
 import { useTranslations } from "next-intl";
-import { motion } from "motion/react";
 import { ArrowUpRight, FilePenLine, ShieldCheck, Zap } from "lucide-react";
 import { AppShell } from "@/components/ui/AppShell";
 import { Button } from "@/components/ui/Button";
 import { DocMark } from "@/components/ui/DocMark";
-
-const easeOut = [0.23, 1, 0.32, 1] as const;
 
 export default function HomePage() {
   const t = useTranslations("home");
@@ -18,40 +15,20 @@ export default function HomePage() {
     <AppShell>
       <section className="grid items-center gap-10 lg:grid-cols-[1.1fr_0.9fr] lg:gap-12">
         <div>
-          <motion.p
-            initial={{ y: 8 }}
-            animate={{ y: 0 }}
-            transition={{ duration: 0.35, ease: easeOut }}
-            className="inline-flex items-center gap-2 rounded-full border border-line bg-white/5 px-3 py-1 text-xs font-medium tracking-wide text-accent"
-          >
+          <p className="inline-flex items-center gap-2 rounded-full border border-line bg-white/5 px-3 py-1 text-xs font-medium tracking-wide text-accent">
             <Zap className="h-3.5 w-3.5" />
             {tc("tagline")}
-          </motion.p>
+          </p>
 
-          <motion.h1
-            initial={{ y: 12 }}
-            animate={{ y: 0 }}
-            transition={{ duration: 0.45, delay: 0.05, ease: easeOut }}
-            className="mt-6 max-w-xl text-4xl font-semibold tracking-tight text-foreground sm:text-5xl lg:text-[3.35rem] lg:leading-[1.08]"
-          >
+          <h1 className="mt-6 max-w-xl text-4xl font-semibold tracking-tight text-foreground sm:text-5xl lg:text-[3.35rem] lg:leading-[1.08]">
             {t("title")}
-          </motion.h1>
+          </h1>
 
-          <motion.p
-            initial={{ y: 10 }}
-            animate={{ y: 0 }}
-            transition={{ duration: 0.4, delay: 0.12, ease: easeOut }}
-            className="mt-5 max-w-lg text-base leading-relaxed text-muted sm:text-lg"
-          >
+          <p className="mt-5 max-w-lg text-base leading-relaxed text-muted sm:text-lg">
             {t("subtitle")}
-          </motion.p>
+          </p>
 
-          <motion.div
-            initial={{ y: 10 }}
-            animate={{ y: 0 }}
-            transition={{ duration: 0.4, delay: 0.18, ease: easeOut }}
-            className="mt-8 flex flex-wrap gap-3"
-          >
+          <div className="mt-8 flex flex-wrap gap-3">
             <Link href="/documents">
               <Button size="lg" className="gap-2">
                 {t("ctaDocuments")}
@@ -64,14 +41,9 @@ export default function HomePage() {
                 {t("ctaLogin")}
               </Button>
             </Link>
-          </motion.div>
+          </div>
 
-          <motion.ul
-            initial={{ y: 8 }}
-            animate={{ y: 0 }}
-            transition={{ duration: 0.45, delay: 0.28, ease: easeOut }}
-            className="mt-10 grid gap-3 sm:grid-cols-2"
-          >
+          <ul className="mt-10 grid gap-3 sm:grid-cols-2">
             {[
               { icon: FilePenLine, label: t("featureEdit") },
               { icon: ShieldCheck, label: t("featureSecure") },
@@ -86,15 +58,10 @@ export default function HomePage() {
                 {label}
               </li>
             ))}
-          </motion.ul>
+          </ul>
         </div>
 
-        <motion.div
-          initial={{ y: 12, scale: 0.98 }}
-          animate={{ y: 0, scale: 1 }}
-          transition={{ duration: 0.5, delay: 0.1, ease: easeOut }}
-          className="relative mx-auto w-full max-w-md"
-        >
+        <div className="relative mx-auto w-full max-w-md">
           <div className="glass-strong relative overflow-hidden rounded-[2rem] p-8 glow-ring">
             <div className="absolute -right-10 -top-10 h-40 w-40 rounded-full bg-accent/20 blur-2xl" />
             <div className="absolute -bottom-12 -left-8 h-44 w-44 rounded-full bg-blue-500/20 blur-2xl" />
@@ -105,7 +72,7 @@ export default function HomePage() {
               {t("visualCaption")}
             </p>
           </div>
-        </motion.div>
+        </div>
       </section>
     </AppShell>
   );

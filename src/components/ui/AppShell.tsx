@@ -28,7 +28,7 @@ export function AppShell({
   }
 
   return (
-    <div className="relative flex min-h-full flex-col overflow-hidden">
+    <div className="relative flex min-h-full flex-col overflow-x-hidden">
       <div
         aria-hidden
         className="pointer-events-none absolute inset-0 -z-10 overflow-hidden"
