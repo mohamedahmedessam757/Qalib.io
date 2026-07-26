@@ -62,10 +62,10 @@ export default function HomePage() {
         </div>
 
         <div className="relative mx-auto w-full max-w-md">
-          <div className="glass-strong relative overflow-hidden rounded-[2rem] p-8 glow-ring">
-            <div className="absolute -right-10 -top-10 h-40 w-40 rounded-full bg-accent/20 blur-2xl" />
-            <div className="absolute -bottom-12 -left-8 h-44 w-44 rounded-full bg-blue-500/20 blur-2xl" />
-            <div className="float-soft relative flex justify-center">
+          <div className="glass-strong relative overflow-hidden rounded-[2rem] p-8">
+            <div className="absolute -right-10 -top-10 hidden h-40 w-40 rounded-full bg-accent/20 blur-2xl sm:block" />
+            <div className="absolute -bottom-12 -left-8 hidden h-44 w-44 rounded-full bg-blue-500/20 blur-2xl sm:block" />
+            <div className="relative flex justify-center">
               <DocMark className="h-52 w-52" />
             </div>
             <p className="relative mt-6 text-center text-sm text-muted">

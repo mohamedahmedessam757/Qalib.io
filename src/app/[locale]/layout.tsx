@@ -35,10 +35,13 @@ export default async function LocaleLayout({
     <html
       lang={locale}
       dir={dir}
-      className="h-full antialiased"
+      className="h-full bg-[#070b14] antialiased"
+      style={{ colorScheme: "dark", backgroundColor: "#070b14" }}
       suppressHydrationWarning
     >
       <head>
+        <meta name="theme-color" content="#070b14" />
+        <meta name="color-scheme" content="dark" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link
           rel="preconnect"
@@ -51,7 +54,8 @@ export default async function LocaleLayout({
         />
       </head>
       <body
-        className="min-h-full font-sans text-foreground"
+        className="min-h-full bg-[#070b14] font-sans text-foreground"
+        style={{ backgroundColor: "#070b14" }}
         suppressHydrationWarning
       >
         <NextIntlClientProvider messages={messages}>

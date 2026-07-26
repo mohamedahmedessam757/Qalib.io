@@ -41,6 +41,13 @@
   box-sizing: border-box;
 }
 
+html {
+  /* Solid base — never leave transparent (mobile Chrome flashes white behind) */
+  background-color: #070b14;
+  color-scheme: dark;
+  min-height: 100%;
+}
+
 html,
 body {
   min-height: 100%;
@@ -50,13 +57,14 @@ body {
   margin: 0;
   color: var(--ink);
   font-family: var(--font-sans);
-  /* Avoid background-attachment:fixed — causes severe flicker on mobile Chrome */
-  background:
+  background-color: #070b14;
+  background-image:
     radial-gradient(900px 520px at 12% -8%, rgba(45, 212, 191, 0.18), transparent 55%),
     radial-gradient(780px 480px at 92% 8%, rgba(56, 120, 255, 0.16), transparent 50%),
     radial-gradient(640px 420px at 50% 110%, rgba(167, 139, 250, 0.08), transparent 45%),
     linear-gradient(165deg, #05080f 0%, #0a1220 48%, #07101c 100%);
   background-attachment: scroll;
+  background-repeat: no-repeat;
 }
 
 a {
@@ -101,11 +109,13 @@ a {
 }
 
 @media (max-width: 639px) {
+  /* backdrop-filter flickers black/white on many Android GPUs — use opaque panels */
   .glass,
   .glass-strong,
   .editor-chrome {
-    backdrop-filter: blur(10px) saturate(130%);
-    -webkit-backdrop-filter: blur(10px) saturate(130%);
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    background: rgba(14, 22, 38, 0.97) !important;
     box-shadow:
       0 1px 0 rgba(255, 255, 255, 0.08) inset,
       0 8px 24px rgba(0, 0, 0, 0.28);
@@ -118,11 +128,10 @@ a {
   .editor-canvas-frame {
     border-inline: none;
     border-radius: 0;
-    /* Keep scroll containment; toolbar menus are clamped separately */
     overflow: hidden;
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-    background: rgba(16, 24, 40, 0.72);
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    background: rgba(16, 24, 40, 0.97) !important;
   }
 
   /*
@@ -214,17 +223,7 @@ body [data-qalib-clamped="true"][data-qalib-clamp-kind="menu"] {
 }
 
 .page-enter {
-  /* Transform only — never opacity:0 (blank flash on mobile remounts) */
-  animation: page-enter 360ms var(--ease-out) both;
-}
-
-@keyframes page-enter {
-  from {
-    transform: translateY(8px);
-  }
-  to {
-    transform: translateY(0);
-  }
+  /* no-op: kept for class compatibility; animations caused mobile flicker */
 }
 
 @keyframes float-soft {
@@ -238,12 +237,12 @@ body [data-qalib-clamped="true"][data-qalib-clamp-kind="menu"] {
 }
 
 .float-soft {
-  animation: float-soft 5.5s var(--ease-in-out) infinite;
+  animation: none;
 }
 
-@media (max-width: 639px) {
+@media (min-width: 640px) {
   .float-soft {
-    animation: none;
+    animation: float-soft 5.5s var(--ease-in-out) infinite;
   }
 }
 
@@ -306,15 +305,6 @@ body [data-qalib-clamped="true"][data-qalib-clamp-kind="menu"] {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
-
-  .page-enter,
   .float-soft {
     animation: none !important;
   }
