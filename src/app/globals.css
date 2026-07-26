@@ -1,0 +1,315 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #070b14;
+  --bg-elevated: rgba(255, 255, 255, 0.04);
+  --ink: #f2f5f8;
+  --ink-muted: #9aa8b8;
+  --line: rgba(255, 255, 255, 0.12);
+  --accent: #2dd4bf;
+  --accent-hover: #5eead4;
+  --accent-soft: rgba(45, 212, 191, 0.16);
+  --danger: #fb7185;
+  --success: #34d399;
+  --glass: rgba(16, 24, 40, 0.55);
+  --glass-strong: rgba(18, 28, 48, 0.72);
+  --glow: rgba(45, 212, 191, 0.35);
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --background: var(--bg);
+  --foreground: var(--ink);
+}
+
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--ink);
+  --color-elevated: var(--bg-elevated);
+  --color-muted: var(--ink-muted);
+  --color-line: var(--line);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+  --color-glass: var(--glass);
+  --color-glass-strong: var(--glass-strong);
+  --font-sans: "Outfit", "IBM Plex Sans Arabic", ui-sans-serif, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  font-family: var(--font-sans);
+  background:
+    radial-gradient(900px 520px at 12% -8%, rgba(45, 212, 191, 0.18), transparent 55%),
+    radial-gradient(780px 480px at 92% 8%, rgba(56, 120, 255, 0.16), transparent 50%),
+    radial-gradient(640px 420px at 50% 110%, rgba(167, 139, 250, 0.08), transparent 45%),
+    linear-gradient(165deg, #05080f 0%, #0a1220 48%, #07101c 100%);
+  background-attachment: fixed;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.glass {
+  background: linear-gradient(
+    145deg,
+    rgba(255, 255, 255, 0.1) 0%,
+    rgba(255, 255, 255, 0.04) 45%,
+    rgba(16, 24, 40, 0.65) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.1) inset,
+    0 0 0 1px rgba(45, 212, 191, 0.04) inset,
+    0 20px 50px rgba(0, 0, 0, 0.4);
+}
+
+.glass-strong {
+  background: linear-gradient(
+    160deg,
+    rgba(255, 255, 255, 0.12) 0%,
+    rgba(20, 30, 50, 0.78) 55%,
+    rgba(10, 16, 28, 0.88) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  backdrop-filter: blur(32px) saturate(180%);
+  -webkit-backdrop-filter: blur(32px) saturate(180%);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.12) inset,
+    0 28px 70px rgba(0, 0, 0, 0.45);
+}
+
+@media (max-width: 639px) {
+  .glass,
+  .glass-strong,
+  .editor-chrome {
+    backdrop-filter: blur(10px) saturate(130%);
+    -webkit-backdrop-filter: blur(10px) saturate(130%);
+    box-shadow:
+      0 1px 0 rgba(255, 255, 255, 0.08) inset,
+      0 8px 24px rgba(0, 0, 0, 0.28);
+  }
+
+  .editor-mobile-shell {
+    touch-action: manipulation;
+  }
+
+  .editor-canvas-frame {
+    border-inline: none;
+    border-radius: 0;
+    /* Keep scroll containment; toolbar menus are clamped separately */
+    overflow: hidden;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: rgba(16, 24, 40, 0.72);
+  }
+
+  /*
+   * Keep toolbar horizontally scrollable, but do not clip vertical dropdowns.
+   * Eigenpal menus use position:fixed; still avoid overflow-y:hidden on the chrome.
+   */
+  .docx-shell[data-compact="true"] .ep-root > div:first-child,
+  .docx-shell[data-compact="true"] .ep-root [class*="TitleBar"],
+  .docx-shell[data-compact="true"] .ep-root [class*="title-bar"] {
+    overflow-x: auto;
+    overflow-y: visible;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    max-width: 100%;
+    scrollbar-width: thin;
+  }
+
+  .docx-shell[data-compact="true"] .docx-editor-toolbar,
+  .docx-shell[data-compact="true"] [class*="Toolbar"],
+  .docx-shell[data-compact="true"] [class*="toolbar"],
+  .docx-shell[data-compact="true"] .ep-root [class*="sticky"],
+  .docx-shell[data-compact="true"] .ep-root .sticky {
+    overflow-x: auto;
+    overflow-y: visible;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    max-width: 100%;
+    scrollbar-width: thin;
+    z-index: 20 !important;
+  }
+
+  .docx-shell[data-compact="true"] .ep-root [role="menu"],
+  .docx-shell[data-compact="true"] .ep-root [role="listbox"],
+  .docx-shell[data-compact="true"] .ep-root [data-state="open"],
+  body [data-qalib-clamped="true"][data-qalib-clamp-kind="menu"] {
+    max-width: min(18rem, calc(100vw - 1rem)) !important;
+    max-height: calc(100dvh - 1rem) !important;
+    box-sizing: border-box !important;
+  }
+
+  .docx-shell[data-compact="true"] .ep-root .sticky,
+  .docx-shell[data-compact="true"] .ep-root [class*="sticky"] {
+    overflow-x: auto !important;
+    overflow-y: visible !important;
+  }
+
+  .editor-mobile-shell > header {
+    z-index: 40;
+  }
+
+  .editor-mobile-shell > header .editor-overflow-menu {
+    z-index: 50;
+  }
+
+  .docx-shell[data-compact="true"] button {
+    min-height: 40px;
+    min-width: 40px;
+  }
+
+  .pdf-toolbar {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .touch-target {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+.glow-ring {
+  box-shadow:
+    0 0 0 1px rgba(45, 212, 191, 0.25),
+    0 0 40px rgba(45, 212, 191, 0.12);
+}
+
+/* Don't trap toolbar menus in glass blur; keep page content scroll-stable */
+.editor-canvas-frame.glass {
+  overflow: hidden;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.docx-shell .ep-root [role="menu"],
+.docx-shell .ep-root [role="listbox"],
+body [data-qalib-clamped="true"][data-qalib-clamp-kind="menu"] {
+  max-width: min(22rem, calc(100vw - 1rem)) !important;
+  max-height: calc(100dvh - 1rem) !important;
+  box-sizing: border-box !important;
+}
+
+.page-enter {
+  animation: page-enter 420ms var(--ease-out) both;
+}
+
+@keyframes page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes float-soft {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+.float-soft {
+  animation: float-soft 5.5s var(--ease-in-out) infinite;
+}
+
+/* Print / Save-as-PDF: hide Qalib chrome, show document pages only */
+@media print {
+  html,
+  body {
+    background: #fff !important;
+    color: #000 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  body.qalib-printing * {
+    visibility: hidden !important;
+  }
+
+  body.qalib-printing .paged-editor__pages,
+  body.qalib-printing .paged-editor__pages *,
+  body.qalib-printing .layout-page,
+  body.qalib-printing .layout-page * {
+    visibility: visible !important;
+  }
+
+  body.qalib-printing .paged-editor__pages {
+    position: absolute !important;
+    inset: 0 auto auto 0 !important;
+    display: block !important;
+    overflow: visible !important;
+    height: auto !important;
+    max-height: none !important;
+    transform: none !important;
+    background: #fff !important;
+  }
+
+  body.qalib-printing .layout-page {
+    break-after: page;
+    page-break-after: always;
+    box-shadow: none !important;
+    margin: 0 auto !important;
+  }
+
+  body.qalib-printing .layout-page:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+
+  header,
+  .editor-chrome,
+  .editor-mobile-shell > header,
+  .print\:hidden,
+  [data-sonner-toaster],
+  .glass-strong.fixed {
+    display: none !important;
+  }
+
+  @page {
+    margin: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .page-enter,
+  .float-soft {
+    animation: none !important;
+  }
+}

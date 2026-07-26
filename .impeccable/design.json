@@ -1,0 +1,17 @@
+{
+  "surface": "product",
+  "product": "Qalib",
+  "direction": "Quiet editorial workstation — cool mist, ink, teal accent",
+  "fonts": ["IBM Plex Sans", "IBM Plex Sans Arabic", "IBM Plex Mono"],
+  "colors": {
+    "bg": "#E8EEF2",
+    "ink": "#15202B",
+    "accent": "#0B6E6A"
+  },
+  "antiPatterns": [
+    "Inter",
+    "purple gradients",
+    "nested cards",
+    "bounce easing"
+  ]
+}
