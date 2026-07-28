@@ -268,19 +268,36 @@ export function PdfEditorClient({
       markDirty();
       return;
     }
-    if (tool === "rect" || tool === "border" || tool === "line") {
+    if (
+      tool === "rect" ||
+      tool === "border" ||
+      tool === "line" ||
+      tool === "oval" ||
+      tool === "doubleFrame" ||
+      tool === "banner"
+    ) {
       const overlay: ShapeOverlay = {
         id: createId(tool),
         type: tool,
         pageIndex,
         x: Math.min(x, 0.55),
         y: Math.min(y, 0.75),
-        w: tool === "line" ? 0.35 : 0.32,
-        h: tool === "line" ? 0.02 : 0.18,
+        w: tool === "line" ? 0.35 : tool === "banner" ? 0.7 : tool === "border" || tool === "doubleFrame" ? 0.72 : 0.32,
+        h: tool === "line" ? 0.02 : tool === "banner" ? 0.1 : tool === "border" || tool === "doubleFrame" ? 0.82 : 0.18,
         stroke: color,
-        strokeWidth: tool === "border" ? 2.5 : 1.5,
+        strokeWidth:
+          tool === "border" || tool === "doubleFrame"
+            ? 2.5
+            : tool === "banner"
+              ? 1.25
+              : 1.5,
         fill: color,
-        fillOpacity: tool === "rect" ? 0.12 : 0,
+        fillOpacity:
+          tool === "rect" || tool === "oval"
+            ? 0.12
+            : tool === "banner"
+              ? 0.18
+              : 0,
       };
       pushHistory([...overlays, overlay]);
       setSelectedId(overlay.id);
@@ -577,6 +594,9 @@ export function PdfEditorClient({
               rect: t("toolRect"),
               border: t("toolBorder"),
               line: t("toolLine"),
+              oval: t("toolOval"),
+              doubleFrame: t("toolDoubleFrame"),
+              banner: t("toolBanner"),
               fontSize: t("fontSize"),
               fontColor: t("fontColor"),
               zoomIn: t("zoomIn"),
@@ -617,7 +637,7 @@ export function PdfEditorClient({
       />
 
       <div className="min-h-0 flex-1 overflow-auto sm:px-4 sm:pb-3 sm:pt-2">
-        <div className="editor-canvas-frame glass min-h-full overflow-hidden rounded-none sm:rounded-[1.5rem]">
+        <div className="editor-canvas-frame glass min-h-full overflow-auto rounded-none sm:rounded-[1.5rem]">
           {!buffer ? (
             <div className="flex h-[60vh] flex-col items-center justify-center gap-3 px-6 text-sm text-muted">
               <LoaderCircle className="h-5 w-5 animate-spin text-accent" />

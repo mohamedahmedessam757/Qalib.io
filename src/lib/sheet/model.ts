@@ -1,12 +1,30 @@
 export type SheetCellValue = string | number | boolean | null;
 
+export type CellAlign = "left" | "center" | "right";
+
+export type CellBorder = {
+  top?: boolean;
+  right?: boolean;
+  bottom?: boolean;
+  left?: boolean;
+  color?: string;
+};
+
 export type SheetCell = {
   r: number;
   c: number;
   value: SheetCellValue;
   formula?: string;
   bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
   fill?: string;
+  color?: string;
+  align?: CellAlign;
+  fontSize?: number;
+  border?: CellBorder;
+  /** Excel-like format hints */
+  numberFormat?: "general" | "number" | "currency" | "percent" | "date";
 };
 
 export type SheetModel = {
@@ -15,6 +33,11 @@ export type SheetModel = {
   cols: number;
   cells: Record<string, SheetCell>;
   colWidths: number[];
+  /** Optional decorative frame around the sheet viewport */
+  frame?: {
+    style: "none" | "single" | "double" | "thick";
+    color: string;
+  };
 };
 
 export type WorkbookModel = {
@@ -61,6 +84,7 @@ export function emptySheet(name: string, rows = 40, cols = 12): SheetModel {
     cols,
     cells: {},
     colWidths: Array.from({ length: cols }, () => 12),
+    frame: { style: "none", color: "#0f172a" },
   };
 }
 
@@ -79,4 +103,27 @@ export function snapshotSheet(sheet: SheetModel, maxCells = 200) {
     cols: sheet.cols,
     filled: entries,
   };
+}
+
+export function formatCellDisplay(
+  value: SheetCellValue,
+  numberFormat?: SheetCell["numberFormat"],
+): string {
+  if (value == null) return "";
+  if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
+  if (typeof value === "number") {
+    if (numberFormat === "percent") return `${(value * 100).toFixed(2)}%`;
+    if (numberFormat === "currency") {
+      return value.toLocaleString(undefined, {
+        style: "currency",
+        currency: "EGP",
+        maximumFractionDigits: 2,
+      });
+    }
+    if (numberFormat === "number") {
+      return value.toLocaleString(undefined, { maximumFractionDigits: 4 });
+    }
+    return String(value);
+  }
+  return String(value);
 }

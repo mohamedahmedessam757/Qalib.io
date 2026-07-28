@@ -36,7 +36,7 @@ export type TableOverlay = PdfOverlayBase & {
 };
 
 export type ShapeOverlay = PdfOverlayBase & {
-  type: "rect" | "border" | "line";
+  type: "rect" | "border" | "line" | "oval" | "doubleFrame" | "banner";
   stroke: string;
   strokeWidth: number;
   /** 0–1 fill opacity; 0 = none */
@@ -225,7 +225,10 @@ export async function exportPdfWithOverlays(
     if (
       overlay.type === "rect" ||
       overlay.type === "border" ||
-      overlay.type === "line"
+      overlay.type === "line" ||
+      overlay.type === "oval" ||
+      overlay.type === "doubleFrame" ||
+      overlay.type === "banner"
     ) {
       const stroke = hexToRgb(overlay.stroke || "#0f766e");
       const sw = Math.max(0.5, Math.min(overlay.strokeWidth || 1.5, 12));
@@ -235,6 +238,52 @@ export async function exportPdfWithOverlays(
           end: { x: x + w, y: y + h / 2 },
           thickness: sw,
           color: rgb(stroke.r, stroke.g, stroke.b),
+        });
+      } else if (overlay.type === "oval") {
+        const fillOp = overlay.fillOpacity ?? 0.08;
+        const fill = hexToRgb(overlay.fill || overlay.stroke || "#0f766e");
+        page.drawEllipse({
+          x: x + w / 2,
+          y: y + h / 2,
+          xScale: w / 2,
+          yScale: h / 2,
+          borderColor: rgb(stroke.r, stroke.g, stroke.b),
+          borderWidth: Math.max(sw, 1.5),
+          color: fillOp > 0 ? rgb(fill.r, fill.g, fill.b) : undefined,
+          opacity: fillOp > 0 ? fillOp : undefined,
+          borderOpacity: 1,
+        });
+      } else if (overlay.type === "doubleFrame") {
+        page.drawRectangle({
+          x,
+          y,
+          width: w,
+          height: h,
+          borderColor: rgb(stroke.r, stroke.g, stroke.b),
+          borderWidth: Math.max(sw, 2),
+        });
+        const inset = Math.max(6, sw * 3);
+        page.drawRectangle({
+          x: x + inset,
+          y: y + inset,
+          width: Math.max(4, w - inset * 2),
+          height: Math.max(4, h - inset * 2),
+          borderColor: rgb(stroke.r, stroke.g, stroke.b),
+          borderWidth: Math.max(1, sw * 0.75),
+        });
+      } else if (overlay.type === "banner") {
+        const fill = hexToRgb(overlay.fill || overlay.stroke || "#0f766e");
+        const fillOp = overlay.fillOpacity ?? 0.18;
+        page.drawRectangle({
+          x,
+          y,
+          width: w,
+          height: h,
+          color: rgb(fill.r, fill.g, fill.b),
+          opacity: fillOp,
+          borderColor: rgb(stroke.r, stroke.g, stroke.b),
+          borderWidth: sw,
+          borderOpacity: 1,
         });
       } else {
         const fillOp = overlay.fillOpacity ?? (overlay.type === "rect" ? 0.12 : 0);

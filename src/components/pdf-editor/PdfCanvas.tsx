@@ -346,6 +346,52 @@ export function PdfCanvas({
                       }}
                     />
                   ) : null}
+                  {overlay.type === "doubleFrame" ? (
+                    <div
+                      className="h-full w-full border-solid"
+                      style={{
+                        borderWidth: Math.max(2, overlay.strokeWidth),
+                        borderColor: overlay.stroke,
+                        padding: 6,
+                      }}
+                    >
+                      <div
+                        className="h-full w-full border-solid"
+                        style={{
+                          borderWidth: Math.max(1, overlay.strokeWidth * 0.75),
+                          borderColor: overlay.stroke,
+                        }}
+                      />
+                    </div>
+                  ) : null}
+                  {overlay.type === "oval" ? (
+                    <div
+                      className="h-full w-full rounded-full border-solid"
+                      style={{
+                        borderWidth: Math.max(2, overlay.strokeWidth),
+                        borderColor: overlay.stroke,
+                        backgroundColor:
+                          (overlay.fillOpacity ?? 0) > 0
+                            ? overlay.fill || overlay.stroke
+                            : "transparent",
+                        opacity:
+                          (overlay.fillOpacity ?? 0) > 0
+                            ? Math.max(overlay.fillOpacity || 0.12, 0.08)
+                            : 1,
+                      }}
+                    />
+                  ) : null}
+                  {overlay.type === "banner" ? (
+                    <div
+                      className="h-full w-full border-solid"
+                      style={{
+                        borderWidth: overlay.strokeWidth,
+                        borderColor: overlay.stroke,
+                        backgroundColor: overlay.fill || overlay.stroke,
+                        opacity: Math.max(overlay.fillOpacity || 0.18, 0.12),
+                      }}
+                    />
+                  ) : null}
                   {overlay.type === "line" ? (
                     <div
                       className="absolute inset-x-0 top-1/2 -translate-y-1/2"

@@ -2,6 +2,7 @@ import ExcelJS from "exceljs";
 import {
   cellKey,
   emptySheet,
+  type CellAlign,
   type SheetCell,
   type SheetModel,
   type WorkbookModel,
@@ -38,6 +39,16 @@ function cellDisplay(cell: ExcelJS.Cell): {
   return { value: String(v) };
 }
 
+function argbToHex(argb?: string): string | undefined {
+  if (!argb || argb.length < 6) return undefined;
+  return `#${argb.slice(-6)}`;
+}
+
+function alignFromExcel(a?: ExcelJS.Alignment["horizontal"]): CellAlign | undefined {
+  if (a === "left" || a === "center" || a === "right") return a;
+  return undefined;
+}
+
 export async function workbookFromBuffer(
   buffer: ArrayBuffer,
 ): Promise<WorkbookModel> {
@@ -65,21 +76,31 @@ export async function workbookFromBuffer(
           while (sheet.colWidths.length < sheet.cols) sheet.colWidths.push(12);
         }
         const parsed = cellDisplay(cell);
-        const bold = Boolean(cell.font?.bold);
         const fill =
           cell.fill &&
           cell.fill.type === "pattern" &&
-          cell.fill.pattern === "solid" &&
-          typeof cell.fill.fgColor?.argb === "string"
-            ? `#${cell.fill.fgColor.argb.slice(2)}`
+          cell.fill.pattern === "solid"
+            ? argbToHex(cell.fill.fgColor?.argb)
             : undefined;
+        const border: SheetCell["border"] = {};
+        if (cell.border?.top?.style) border.top = true;
+        if (cell.border?.right?.style) border.right = true;
+        if (cell.border?.bottom?.style) border.bottom = true;
+        if (cell.border?.left?.style) border.left = true;
+        const hasBorder = border.top || border.right || border.bottom || border.left;
         const entry: SheetCell = {
           r,
           c,
           value: parsed.value,
           formula: parsed.formula,
-          bold: bold || undefined,
+          bold: cell.font?.bold || undefined,
+          italic: cell.font?.italic || undefined,
+          underline: Boolean(cell.font?.underline) || undefined,
           fill,
+          color: argbToHex(cell.font?.color?.argb),
+          align: alignFromExcel(cell.alignment?.horizontal),
+          fontSize: cell.font?.size,
+          border: hasBorder ? border : undefined,
         };
         sheet.cells[cellKey(r, c)] = entry;
       });
@@ -108,9 +129,16 @@ export async function workbookToBuffer(
       } else if (cell.value != null && cell.value !== "") {
         excelCell.value = cell.value;
       }
-      if (cell.bold) {
-        excelCell.font = { ...(excelCell.font || {}), bold: true };
-      }
+      excelCell.font = {
+        ...(excelCell.font || {}),
+        bold: cell.bold || false,
+        italic: cell.italic || false,
+        underline: cell.underline ? "single" : undefined,
+        size: cell.fontSize,
+        color: cell.color
+          ? { argb: `FF${cell.color.replace("#", "")}` }
+          : undefined,
+      };
       if (cell.fill) {
         const hex = cell.fill.replace("#", "");
         excelCell.fill = {
@@ -119,10 +147,33 @@ export async function workbookToBuffer(
           fgColor: { argb: `FF${hex}` },
         };
       }
+      if (cell.align) {
+        excelCell.alignment = {
+          ...(excelCell.alignment || {}),
+          horizontal: cell.align,
+          vertical: "middle",
+        };
+      }
+      if (cell.border) {
+        const edge = {
+          style: "thin" as const,
+          color: { argb: `FF${(cell.border.color || "#334155").replace("#", "")}` },
+        };
+        excelCell.border = {
+          top: cell.border.top ? edge : undefined,
+          right: cell.border.right ? edge : undefined,
+          bottom: cell.border.bottom ? edge : undefined,
+          left: cell.border.left ? edge : undefined,
+        };
+      }
+      if (cell.numberFormat === "percent") excelCell.numFmt = "0.00%";
+      if (cell.numberFormat === "currency") excelCell.numFmt = '#,##0.00 "EGP"';
+      if (cell.numberFormat === "number") excelCell.numFmt = "#,##0.####";
     }
   }
   const buf = await wb.xlsx.writeBuffer();
-  const bytes = buf instanceof ArrayBuffer ? new Uint8Array(buf) : new Uint8Array(buf);
+  const bytes =
+    buf instanceof ArrayBuffer ? new Uint8Array(buf) : new Uint8Array(buf);
   return bytes.buffer.slice(
     bytes.byteOffset,
     bytes.byteOffset + bytes.byteLength,

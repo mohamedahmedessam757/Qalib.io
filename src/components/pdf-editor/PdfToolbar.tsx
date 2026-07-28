@@ -1,14 +1,17 @@
 "use client";
 
 import {
+  Circle,
   Eraser,
   Frame,
   ImagePlus,
   Minus,
   MousePointer2,
+  PanelTop,
   Plus,
   Slash,
   Square,
+  SquareStack,
   Table2,
   Type,
 } from "lucide-react";
@@ -22,7 +25,10 @@ export type PdfTool =
   | "whiteout"
   | "rect"
   | "border"
-  | "line";
+  | "line"
+  | "oval"
+  | "doubleFrame"
+  | "banner";
 
 export function PdfToolbar({
   tool,
@@ -50,6 +56,9 @@ export function PdfToolbar({
     rect: string;
     border: string;
     line: string;
+    oval: string;
+    doubleFrame: string;
+    banner: string;
     fontSize: string;
     fontColor: string;
     zoomIn: string;
@@ -70,6 +79,9 @@ export function PdfToolbar({
     { id: "whiteout", icon: Eraser, label: labels.whiteout },
     { id: "rect", icon: Square, label: labels.rect },
     { id: "border", icon: Frame, label: labels.border },
+    { id: "doubleFrame", icon: SquareStack, label: labels.doubleFrame },
+    { id: "oval", icon: Circle, label: labels.oval },
+    { id: "banner", icon: PanelTop, label: labels.banner },
     { id: "line", icon: Slash, label: labels.line },
   ];
 

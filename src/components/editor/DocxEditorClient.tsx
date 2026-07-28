@@ -18,6 +18,7 @@ import {
   Download,
   FileDown,
   FilePlus2,
+  Frame,
   ListTree,
   LoaderCircle,
   Minus,
@@ -34,6 +35,11 @@ import {
   setCachedDocumentMeta,
 } from "@/lib/document-cache";
 import { useIsMobile } from "@/hooks/useIsMobile";
+import {
+  applyPageFrame,
+  applyTextWatermark,
+  type PageFrameStyle,
+} from "@/lib/docx/decor";
 import { AiChatPanel } from "@/components/ai/AiChatPanel";
 import {
   SelectionEditSheet,
@@ -291,10 +297,48 @@ export function DocxEditorClient({
   function onFit() {
     editorRef.current?.fitToWidth();
     // read after layout settles
-    requestAnimationFrame(() => {
+    window.setTimeout(() => {
       const z = editorRef.current?.getZoomLevel?.() ?? 1;
       setZoomPct(Math.round(z * 100));
-    });
+    }, 80);
+  }
+
+  function onApplyFrame(style: PageFrameStyle) {
+    setMenuOpen(false);
+    const editor = editorRef.current;
+    const doc = editor?.getDocument?.();
+    if (!editor || !doc) {
+      toast.error(t("applyError"));
+      return;
+    }
+    try {
+      const next = applyPageFrame(doc, style);
+      editor.loadDocument(next);
+      markDirty();
+      toast.success(t("frameApplied"));
+    } catch {
+      toast.error(t("applyError"));
+    }
+  }
+
+  function onApplyWatermark() {
+    setMenuOpen(false);
+    const editor = editorRef.current;
+    const doc = editor?.getDocument?.();
+    if (!editor || !doc) {
+      toast.error(t("applyError"));
+      return;
+    }
+    const text = window.prompt(t("watermark"), "DRAFT");
+    if (text === null) return;
+    try {
+      const next = applyTextWatermark(doc, text.trim() || null);
+      editor.loadDocument(next);
+      markDirty();
+      toast.success(t("watermarkApplied"));
+    } catch {
+      toast.error(t("applyError"));
+    }
   }
 
   function onAddPage() {
@@ -510,6 +554,37 @@ export function DocxEditorClient({
                     <ListTree className="h-4 w-4" />
                     {t("paragraphs")}
                   </button>
+                  <div className="my-1 border-t border-line" />
+                  <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-muted">
+                    {t("decor")}
+                  </p>
+                  {(
+                    [
+                      ["single", "pageFrameSingle"],
+                      ["double", "pageFrameDouble"],
+                      ["thick", "pageFrameThick"],
+                      ["dashed", "pageFrameDashed"],
+                      ["none", "pageFrameNone"],
+                    ] as const
+                  ).map(([style, key]) => (
+                    <button
+                      key={style}
+                      type="button"
+                      className="flex w-full items-center gap-2 px-3 py-2.5 text-start text-sm hover:bg-white/8"
+                      onClick={() => onApplyFrame(style)}
+                    >
+                      <Frame className="h-4 w-4" />
+                      {t(key)}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 px-3 py-3 text-start text-sm hover:bg-white/8"
+                    onClick={onApplyWatermark}
+                  >
+                    <Scan className="h-4 w-4" />
+                    {t("watermark")}
+                  </button>
                 </div>
               ) : null}
             </div>
@@ -569,6 +644,22 @@ export function DocxEditorClient({
             </Button>
             <Button size="sm" variant="ghost" onClick={onAddPage} title={t("pageAdd")}>
               <FilePlus2 className="h-4 w-4" />
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => onApplyFrame("double")}
+              title={t("pageFrame")}
+            >
+              <Frame className="h-4 w-4" />
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={onApplyWatermark}
+              title={t("watermark")}
+            >
+              <Scan className="h-4 w-4 text-accent" />
             </Button>
             <Button
               size="sm"
@@ -649,7 +740,11 @@ export function DocxEditorClient({
               onSelectionChange={onSelectionChange}
               onZoomChange={(z) => setZoomPct(Math.round(z * 100))}
               onReady={() => {
-                onFit();
+                // DocxCanvas already fits once on view-ready; only sync % label.
+                window.setTimeout(() => {
+                  const z = editorRef.current?.getZoomLevel?.() ?? 1;
+                  setZoomPct(Math.round(z * 100));
+                }, 100);
               }}
             />
           )}

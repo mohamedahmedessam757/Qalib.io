@@ -55,47 +55,86 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
     const editorRef = useRef<DocxEditorRef | null>(null);
     const shellRef = useRef<HTMLDivElement | null>(null);
     const readyRef = useRef(false);
+    /** Auto-fit only until the first stable fit (or user zooms). */
     const autoFitRef = useRef(true);
+    const lastWidthRef = useRef(0);
+    const zoomBusyRef = useRef(false);
+    const pendingDeltaRef = useRef(0);
+    const fitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const onZoomChangeRef = useRef(onZoomChange);
+    const compactRef = useRef(compactChrome);
     onZoomChangeRef.current = onZoomChange;
+    compactRef.current = compactChrome;
 
-    const reportZoom = useCallback(() => {
-      const z = editorRef.current?.getZoom?.() ?? 1;
-      onZoomChangeRef.current?.(z);
-      return z;
+    const reportZoom = useCallback((z?: number) => {
+      const next = z ?? editorRef.current?.getZoom?.() ?? 1;
+      onZoomChangeRef.current?.(next);
+      return next;
     }, []);
 
-    const fitToWidth = useCallback(() => {
+    const applyZoom = useCallback((next: number) => {
+      const editor = editorRef.current;
+      if (!editor || zoomBusyRef.current) return editor?.getZoom?.() ?? next;
+      const clamped = clampZoom(Number(next.toFixed(2)));
+      const current = editor.getZoom?.() ?? 1;
+      if (Math.abs(current - clamped) < 0.01) {
+        return reportZoom(current);
+      }
+      zoomBusyRef.current = true;
+      try {
+        editor.setZoom(clamped);
+        // One verify pass only — avoid tight setZoom loops that freeze mobile.
+        const applied = editor.getZoom?.() ?? clamped;
+        if (Math.abs(applied - clamped) > 0.03) {
+          editor.setZoom(clamped);
+        }
+        return reportZoom(editor.getZoom?.() ?? clamped);
+      } finally {
+        // Release on next frame so Eigenpal can finish layout first.
+        requestAnimationFrame(() => {
+          zoomBusyRef.current = false;
+          const pending = pendingDeltaRef.current;
+          if (pending !== 0) {
+            pendingDeltaRef.current = 0;
+            const base = editorRef.current?.getZoom?.() ?? clamped;
+            applyZoom(base + pending);
+          }
+        });
+      }
+    }, [reportZoom]);
+
+    const fitToWidth = useCallback((opts?: { keepAuto?: boolean }) => {
       const editor = editorRef.current;
       const shell = shellRef.current;
       if (!editor || !shell) return;
 
-      autoFitRef.current = true;
       const layout = editor.getEditorRef()?.getLayout();
       const pageW = layout?.pageSize?.w ?? 816;
-      // Use the visible shell width; keep a tiny pad so the page isn't clipped
       const available = Math.max(shell.clientWidth - PAGE_PAD, 100);
       const next = clampZoom(available / pageW);
-      editor.setZoom(next);
-      reportZoom();
-    }, [reportZoom]);
+      lastWidthRef.current = shell.clientWidth;
+
+      // On phones: fit once, then stop ResizeObserver churn (keyboard/URL bar).
+      if (compactRef.current && !opts?.keepAuto) {
+        autoFitRef.current = false;
+      } else if (opts?.keepAuto) {
+        autoFitRef.current = true;
+      }
+
+      applyZoom(next);
+    }, [applyZoom]);
 
     const adjustZoom = useCallback((delta: number) => {
       const editor = editorRef.current;
       if (!editor) return 1;
       autoFitRef.current = false;
-      const current = editor.getZoom?.() ?? 1;
-      const next = clampZoom(Number((current + delta).toFixed(2)));
-      editor.setZoom(next);
-      // Some Eigenpal builds ignore setZoom silently — verify and retry once
-      const applied = editor.getZoom?.() ?? next;
-      if (Math.abs(applied - next) > 0.02) {
-        editor.setZoom(next);
+      if (zoomBusyRef.current) {
+        pendingDeltaRef.current += delta;
+        return editor.getZoom?.() ?? 1;
       }
-      const finalZ = editor.getZoom?.() ?? next;
-      onZoomChangeRef.current?.(finalZ);
-      return finalZ;
-    }, []);
+      const current = editor.getZoom?.() ?? 1;
+      return applyZoom(current + delta);
+    }, [applyZoom]);
 
     const getZoomLevel = useCallback(() => {
       return editorRef.current?.getZoom?.() ?? 1;
@@ -120,7 +159,7 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
       () =>
         new Proxy({} as DocxCanvasHandle, {
           get(_target, prop) {
-            if (prop === "fitToWidth") return fitToWidth;
+            if (prop === "fitToWidth") return () => fitToWidth({ keepAuto: false });
             if (prop === "printDocument") return printDocument;
             if (prop === "adjustZoom") return adjustZoom;
             if (prop === "getZoomLevel") return getZoomLevel;
@@ -141,13 +180,24 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
       const shell = shellRef.current;
       if (!shell) return;
       const ro = new ResizeObserver(() => {
-        if (readyRef.current && autoFitRef.current) fitToWidth();
+        if (!readyRef.current || !autoFitRef.current) return;
+        const w = shell.clientWidth;
+        // Ignore height-only changes (mobile chrome / keyboard).
+        if (Math.abs(w - lastWidthRef.current) < 12) return;
+        if (fitTimerRef.current) clearTimeout(fitTimerRef.current);
+        fitTimerRef.current = setTimeout(() => {
+          if (readyRef.current && autoFitRef.current) {
+            fitToWidth({ keepAuto: !compactRef.current });
+          }
+        }, 220);
       });
       ro.observe(shell);
-      return () => ro.disconnect();
+      return () => {
+        ro.disconnect();
+        if (fitTimerRef.current) clearTimeout(fitTimerRef.current);
+      };
     }, [fitToWidth]);
 
-    // Keep toolbar menus in viewport; never clamp document images/floaters
     useEffect(() => {
       const shell = shellRef.current;
       if (!shell) return;
@@ -157,8 +207,9 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
     const handleViewReady = useCallback(
       (_view: EditorView) => {
         readyRef.current = true;
+        // Single deferred fit — avoid stacked setZoom on open.
         requestAnimationFrame(() => {
-          fitToWidth();
+          fitToWidth({ keepAuto: !compactRef.current });
           onReady?.();
         });
       },
@@ -183,7 +234,7 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
           showZoomControl={!compactChrome}
           showRuler={!compactChrome}
           showMarginGuides={false}
-          initialZoom={compactChrome ? 0.45 : 1}
+          initialZoom={compactChrome ? 0.5 : 1}
           onChange={() => onChange?.()}
           onSelectionChange={() => onSelectionChange?.()}
           onEditorViewReady={handleViewReady}
@@ -191,7 +242,12 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
             void printDocument();
           }}
           onFontsLoaded={() => {
-            if (readyRef.current && autoFitRef.current) fitToWidth();
+            // Fonts can change page width slightly; one quiet refit if still auto-fitting.
+            if (readyRef.current && autoFitRef.current) {
+              fitToWidth({ keepAuto: !compactRef.current });
+            } else if (readyRef.current) {
+              reportZoom();
+            }
           }}
           className="h-full min-h-full"
         />
