@@ -1,5 +1,6 @@
 import fontkit from "@pdf-lib/fontkit";
 import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
+import { hasArabic, preparePdfTextLine } from "./arabic-text";
 
 export type PdfOverlayBase = {
   id: string;
@@ -17,6 +18,9 @@ export type TextOverlay = PdfOverlayBase & {
   fontSize: number;
   color: string;
   coverOriginal?: boolean;
+  /** Logical alignment inside the box */
+  align?: "start" | "center" | "end";
+  dir?: "rtl" | "ltr" | "auto";
 };
 
 export type ImageOverlay = PdfOverlayBase & {
@@ -36,7 +40,15 @@ export type TableOverlay = PdfOverlayBase & {
 };
 
 export type ShapeOverlay = PdfOverlayBase & {
-  type: "rect" | "border" | "line" | "oval" | "doubleFrame" | "banner";
+  type:
+    | "rect"
+    | "border"
+    | "line"
+    | "oval"
+    | "doubleFrame"
+    | "banner"
+    | "fullPageFrame"
+    | "stamp";
   stroke: string;
   strokeWidth: number;
   /** 0–1 fill opacity; 0 = none */
@@ -99,7 +111,7 @@ async function loadArabicFontBytes() {
 }
 
 function needsRichFont(text: string) {
-  return /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/.test(text);
+  return hasArabic(text);
 }
 
 export async function exportPdfWithOverlays(
@@ -114,9 +126,14 @@ export async function exportPdfWithOverlays(
   const arabicBytes = await loadArabicFontBytes();
   if (arabicBytes) {
     try {
-      richFont = await pdf.embedFont(arabicBytes, { subset: true });
+      // Full embed — subsetting can drop Arabic presentation forms after reshape.
+      richFont = await pdf.embedFont(arabicBytes, { subset: false });
     } catch {
-      richFont = helvetica;
+      try {
+        richFont = await pdf.embedFont(arabicBytes, { subset: true });
+      } catch {
+        richFont = helvetica;
+      }
     }
   }
 
@@ -149,12 +166,25 @@ export async function exportPdfWithOverlays(
     if (overlay.type === "text") {
       const { r, g, b } = hexToRgb(overlay.color || "#111827");
       const size = Math.max(8, Math.min(overlay.fontSize, 72));
-      const font = needsRichFont(overlay.text) ? richFont : helvetica;
+      const useArabic = hasArabic(overlay.text);
+      const font = useArabic ? richFont : helvetica;
       const lines = overlay.text.split("\n");
+      const align = overlay.align || (useArabic ? "end" : "start");
       lines.forEach((line, i) => {
         try {
-          page.drawText(line || " ", {
-            x: x + 2,
+          const prepared = preparePdfTextLine(line || " ");
+          const drawn = prepared.text || " ";
+          let textWidth = 0;
+          try {
+            textWidth = font.widthOfTextAtSize(drawn, size);
+          } catch {
+            textWidth = Math.min(w - 4, drawn.length * size * 0.5);
+          }
+          let tx = x + 2;
+          if (align === "end") tx = x + w - 2 - textWidth;
+          else if (align === "center") tx = x + (w - textWidth) / 2;
+          page.drawText(drawn, {
+            x: Math.max(x + 1, tx),
             y: y + h - size - i * (size + 2),
             size,
             font,
@@ -206,8 +236,9 @@ export async function exportPdfWithOverlays(
           if (text) {
             const font = needsRichFont(text) ? richFont : helvetica;
             try {
-              page.drawText(text.slice(0, 40), {
-                x: cx + 3,
+              const prepared = preparePdfTextLine(text.slice(0, 40));
+              page.drawText(prepared.text, {
+                x: prepared.rtl ? cx + 3 : cx + 3,
                 y: cy + cellH / 2 - 4,
                 size: 9,
                 font,
@@ -228,7 +259,9 @@ export async function exportPdfWithOverlays(
       overlay.type === "line" ||
       overlay.type === "oval" ||
       overlay.type === "doubleFrame" ||
-      overlay.type === "banner"
+      overlay.type === "banner" ||
+      overlay.type === "fullPageFrame" ||
+      overlay.type === "stamp"
     ) {
       const stroke = hexToRgb(overlay.stroke || "#0f766e");
       const sw = Math.max(0.5, Math.min(overlay.strokeWidth || 1.5, 12));
@@ -239,8 +272,9 @@ export async function exportPdfWithOverlays(
           thickness: sw,
           color: rgb(stroke.r, stroke.g, stroke.b),
         });
-      } else if (overlay.type === "oval") {
-        const fillOp = overlay.fillOpacity ?? 0.08;
+      } else if (overlay.type === "oval" || overlay.type === "stamp") {
+        const fillOp =
+          overlay.fillOpacity ?? (overlay.type === "stamp" ? 0.06 : 0.08);
         const fill = hexToRgb(overlay.fill || overlay.stroke || "#0f766e");
         page.drawEllipse({
           x: x + w / 2,
@@ -248,28 +282,32 @@ export async function exportPdfWithOverlays(
           xScale: w / 2,
           yScale: h / 2,
           borderColor: rgb(stroke.r, stroke.g, stroke.b),
-          borderWidth: Math.max(sw, 1.5),
+          borderWidth: Math.max(sw, overlay.type === "stamp" ? 2.5 : 1.5),
           color: fillOp > 0 ? rgb(fill.r, fill.g, fill.b) : undefined,
           opacity: fillOp > 0 ? fillOp : undefined,
           borderOpacity: 1,
         });
-      } else if (overlay.type === "doubleFrame") {
+      } else if (
+        overlay.type === "doubleFrame" ||
+        overlay.type === "fullPageFrame"
+      ) {
+        const outer = Math.max(sw, overlay.type === "fullPageFrame" ? 3 : 2);
         page.drawRectangle({
           x,
           y,
           width: w,
           height: h,
           borderColor: rgb(stroke.r, stroke.g, stroke.b),
-          borderWidth: Math.max(sw, 2),
+          borderWidth: outer,
         });
-        const inset = Math.max(6, sw * 3);
+        const inset = Math.max(6, outer * 2.5);
         page.drawRectangle({
           x: x + inset,
           y: y + inset,
           width: Math.max(4, w - inset * 2),
           height: Math.max(4, h - inset * 2),
           borderColor: rgb(stroke.r, stroke.g, stroke.b),
-          borderWidth: Math.max(1, sw * 0.75),
+          borderWidth: Math.max(1, outer * 0.65),
         });
       } else if (overlay.type === "banner") {
         const fill = hexToRgb(overlay.fill || overlay.stroke || "#0f766e");

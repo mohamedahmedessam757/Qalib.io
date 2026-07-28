@@ -12,6 +12,7 @@ import {
   Slash,
   Square,
   SquareStack,
+  Stamp,
   Table2,
   Type,
 } from "lucide-react";
@@ -28,7 +29,9 @@ export type PdfTool =
   | "line"
   | "oval"
   | "doubleFrame"
-  | "banner";
+  | "banner"
+  | "fullPageFrame"
+  | "stamp";
 
 export function PdfToolbar({
   tool,
@@ -59,6 +62,8 @@ export function PdfToolbar({
     oval: string;
     doubleFrame: string;
     banner: string;
+    fullPageFrame: string;
+    stamp: string;
     fontSize: string;
     fontColor: string;
     zoomIn: string;
@@ -79,9 +84,11 @@ export function PdfToolbar({
     { id: "whiteout", icon: Eraser, label: labels.whiteout },
     { id: "rect", icon: Square, label: labels.rect },
     { id: "border", icon: Frame, label: labels.border },
+    { id: "fullPageFrame", icon: Frame, label: labels.fullPageFrame },
     { id: "doubleFrame", icon: SquareStack, label: labels.doubleFrame },
     { id: "oval", icon: Circle, label: labels.oval },
     { id: "banner", icon: PanelTop, label: labels.banner },
+    { id: "stamp", icon: Stamp, label: labels.stamp },
     { id: "line", icon: Slash, label: labels.line },
   ];
 

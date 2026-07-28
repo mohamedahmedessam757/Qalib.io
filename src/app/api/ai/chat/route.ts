@@ -1,6 +1,6 @@
 import { getDocumentForOwner, requireUser } from "@/lib/db";
 import { aiRateLimit } from "@/lib/ai/rate-limit";
-import { buildSystemPrompt, buildSheetSystemPrompt } from "@/lib/ai/prompts";
+import { buildSystemPrompt, buildSheetSystemPrompt, buildPdfSystemPrompt } from "@/lib/ai/prompts";
 import {
   type ChatContentPart,
   type ChatMessage,
@@ -321,7 +321,9 @@ async function handleChat(request: Request) {
       content:
         docKind === "xlsx"
           ? buildSheetSystemPrompt(locale)
-          : buildSystemPrompt(locale),
+          : docKind === "pdf"
+            ? buildPdfSystemPrompt(locale)
+            : buildSystemPrompt(locale),
     },
     ...(context
       ? [
@@ -330,7 +332,9 @@ async function handleChat(request: Request) {
             content:
               docKind === "xlsx"
                 ? `LIVE SHEET SNAPSHOT:\n${context}`
-                : `LIVE DOCUMENT SNAPSHOT (real file — never say empty if paragraphs appear; refresh via read_document):\n${context}`,
+                : docKind === "pdf"
+                  ? `LIVE PDF SNAPSHOT:\n${context}`
+                  : `LIVE DOCUMENT SNAPSHOT (real file — never say empty if paragraphs appear; refresh via read_document):\n${context}`,
           },
         ]
       : []),

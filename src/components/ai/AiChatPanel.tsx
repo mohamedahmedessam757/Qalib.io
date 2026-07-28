@@ -23,9 +23,12 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/Button";
 import type { DocxCanvasHandle } from "@/components/editor/DocxCanvas";
 import type { ExcelEditorHandle } from "@/components/excel-editor/ExcelEditorClient";
+import type { PdfEditorHandle } from "@/lib/ai/apply-pdf-tools";
 import { applyDocTool } from "@/lib/ai/apply-doc-tools";
 import { applySheetTool } from "@/lib/ai/apply-sheet-tools";
+import { applyPdfTool } from "@/lib/ai/apply-pdf-tools";
 import { validateSheetToolCall } from "@/lib/ai/sheet-tools";
+import { isPdfToolName } from "@/lib/ai/pdf-tools";
 import {
   buildMultimodalUserContent,
   buildPersistableUserText,
@@ -74,6 +77,10 @@ function collectSheetContext(sheet: ExcelEditorHandle | null) {
   const snap = sheet?.getActiveSnapshot?.();
   if (!snap) return "";
   return JSON.stringify(snap).slice(0, 12_000);
+}
+
+function collectPdfContext(pdf: PdfEditorHandle | null) {
+  return pdf?.snapshot?.()?.slice(0, 12_000) || "";
 }
 
 function parseSseBuffer(buffer: string): {
@@ -135,6 +142,7 @@ export function AiChatPanel({
   onTitleChanged,
   docKind = "docx",
   sheetRef,
+  pdfRef,
 }: {
   open: boolean;
   onClose: () => void;
@@ -144,6 +152,7 @@ export function AiChatPanel({
   onTitleChanged?: (title: string) => void;
   docKind?: "docx" | "pdf" | "xlsx";
   sheetRef?: React.RefObject<ExcelEditorHandle | null>;
+  pdfRef?: React.RefObject<PdfEditorHandle | null>;
 }) {
   const t = useTranslations("aiChat");
   const locale = useLocale();
@@ -339,7 +348,9 @@ export function AiChatPanel({
             documentContext:
               docKind === "xlsx"
                 ? collectSheetContext(sheetRef?.current || null)
-                : collectDocumentContext(editorRef.current),
+                : docKind === "pdf"
+                  ? collectPdfContext(pdfRef?.current || null)
+                  : collectDocumentContext(editorRef.current),
             locale: locale.startsWith("ar") ? "ar" : "en",
             persistUserMessage: opts.persistUserMessage,
             docKind,
@@ -472,6 +483,24 @@ export function AiChatPanel({
                 });
                 continue;
               }
+            }
+            if (docKind === "pdf" && isPdfToolName(tool.name)) {
+              const result = applyPdfTool(
+                pdfRef?.current || null,
+                tool.name,
+                (tool.args || {}) as Record<string, unknown>,
+              );
+              if (result.mutated) {
+                applied += 1;
+                onDocMutated?.();
+              }
+              toolMessages.push({
+                role: "tool",
+                content: result.result,
+                tool_call_id: tool.id,
+                name: tool.name,
+              });
+              continue;
             }
             const validated = validateToolCall(tool.name, tool.args);
             if (!validated.ok) {
@@ -701,6 +730,7 @@ export function AiChatPanel({
       docKind,
       editorRef,
       sheetRef,
+      pdfRef,
       locale,
       loadConversations,
       onDocMutated,

@@ -346,29 +346,40 @@ export function PdfCanvas({
                       }}
                     />
                   ) : null}
-                  {overlay.type === "doubleFrame" ? (
+                  {overlay.type === "doubleFrame" ||
+                  overlay.type === "fullPageFrame" ? (
                     <div
                       className="h-full w-full border-solid"
                       style={{
-                        borderWidth: Math.max(2, overlay.strokeWidth),
+                        borderWidth: Math.max(
+                          overlay.type === "fullPageFrame" ? 3 : 2,
+                          overlay.strokeWidth,
+                        ),
                         borderColor: overlay.stroke,
-                        padding: 6,
+                        padding: overlay.type === "fullPageFrame" ? 10 : 6,
                       }}
                     >
                       <div
                         className="h-full w-full border-solid"
                         style={{
-                          borderWidth: Math.max(1, overlay.strokeWidth * 0.75),
+                          borderWidth: Math.max(
+                            1,
+                            overlay.strokeWidth *
+                              (overlay.type === "fullPageFrame" ? 0.55 : 0.75),
+                          ),
                           borderColor: overlay.stroke,
                         }}
                       />
                     </div>
                   ) : null}
-                  {overlay.type === "oval" ? (
+                  {overlay.type === "oval" || overlay.type === "stamp" ? (
                     <div
                       className="h-full w-full rounded-full border-solid"
                       style={{
-                        borderWidth: Math.max(2, overlay.strokeWidth),
+                        borderWidth: Math.max(
+                          overlay.type === "stamp" ? 2.5 : 2,
+                          overlay.strokeWidth,
+                        ),
                         borderColor: overlay.stroke,
                         backgroundColor:
                           (overlay.fillOpacity ?? 0) > 0

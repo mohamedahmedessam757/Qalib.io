@@ -1,5 +1,6 @@
 import type { OpenRouterTool } from "./openrouter";
 import { sheetTools } from "./sheet-tools";
+import { pdfTools } from "./pdf-tools";
 
 export const DOC_TOOL_NAMES = [
   "read_document",
@@ -1012,6 +1013,12 @@ export function toolsForDocKind(kind: "docx" | "pdf" | "xlsx" = "docx") {
       LIBRARY_TOOLS.has(t.function.name as DocToolName),
     );
     return [...sheetTools, ...libraryOnly];
+  }
+  if (kind === "pdf") {
+    const libraryOnly = documentTools.filter((t) =>
+      LIBRARY_TOOLS.has(t.function.name as DocToolName),
+    );
+    return [...pdfTools, ...libraryOnly];
   }
   return documentTools;
 }
