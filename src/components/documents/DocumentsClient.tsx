@@ -1,11 +1,12 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 import { AnimatePresence, motion } from "motion/react";
 import {
   FilePlus2,
+  FileSpreadsheet,
   FileText,
   FileUp,
   FolderOpen,
@@ -16,8 +17,10 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import {
+  editorPathForMime,
   isPdfMime,
   isSupportedUpload,
+  isXlsxMime,
   MAX_UPLOAD_BYTES,
 } from "@/lib/documents";
 import { prefetchDocumentMeta } from "@/lib/document-cache";
@@ -52,7 +55,11 @@ async function saveLocalCopy(opts: {
   values: CreateDocFormValues;
 }) {
   const { documentId, title, mimeType, values } = opts;
-  const ext = isPdfMime(mimeType) ? ".pdf" : ".docx";
+  const ext = isPdfMime(mimeType)
+    ? ".pdf"
+    : isXlsxMime(mimeType)
+      ? ".xlsx"
+      : ".docx";
   const suggested =
     (values.localPath.replace(/[\\/]+$/, "") || title).replace(
       /\.(docx|pdf)$/i,
@@ -90,18 +97,21 @@ export function DocumentsClient({ initialDocs }: { initialDocs: Doc[] }) {
   const router = useRouter();
   const [docs, setDocs] = useState(initialDocs);
   const [uploading, setUploading] = useState(false);
-  const [creating, setCreating] = useState<"docx" | "pdf" | null>(null);
+  const [creating, setCreating] = useState<"docx" | "pdf" | "xlsx" | null>(
+    null,
+  );
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [createType, setCreateType] = useState<"docx" | "pdf" | null>(null);
+  const [createType, setCreateType] = useState<"docx" | "pdf" | "xlsx" | null>(
+    null,
+  );
   const [renameDoc, setRenameDoc] = useState<Doc | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const uploadInputId = useId();
 
   function editorHref(doc: Pick<Doc, "id" | "mimeType">) {
-    return isPdfMime(doc.mimeType)
-      ? `/editor/pdf/${doc.id}`
-      : `/editor/${doc.id}`;
+    return editorPathForMime(doc.id, doc.mimeType);
   }
 
   async function onUpload(file: File) {
@@ -258,31 +268,37 @@ export function DocumentsClient({ initialDocs }: { initialDocs: Doc[] }) {
     <div>
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <input
+          id={uploadInputId}
           ref={inputRef}
           type="file"
-          accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          accept=".docx,.pdf,.xlsx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           className="sr-only"
+          disabled={uploading}
           onChange={(e) => {
             const file = e.target.files?.[0];
             if (file) void onUpload(file);
+            // allow re-selecting the same file on mobile
+            e.target.value = "";
           }}
         />
-        <Button
-          onClick={() => inputRef.current?.click()}
-          disabled={busy}
-          className="min-h-11 gap-2"
+        {/* label+htmlFor is the reliable mobile file-picker gesture (not input.click()) */}
+        <label
+          htmlFor={uploadInputId}
+          className={`inline-flex min-h-12 cursor-pointer touch-manipulation items-center justify-center gap-2 rounded-xl bg-accent px-4 text-sm font-medium text-[#041016] shadow-[0_10px_28px_rgba(45,212,191,0.22)] transition-[transform,opacity] active:scale-[0.98] ${
+            uploading ? "pointer-events-none opacity-60" : ""
+          }`}
         >
           {uploading ? (
             <LoaderCircle className="h-4 w-4 animate-spin" />
           ) : (
             <Upload className="h-4 w-4" />
           )}
-          {uploading ? tc("loading") : t("upload")}
-        </Button>
+          {uploading ? t("uploading") : t("upload")}
+        </label>
         <Button
           variant="ghost"
           disabled={busy}
-          className="min-h-11 gap-2"
+          className="min-h-12 touch-manipulation gap-2"
           onClick={() => setCreateType("docx")}
         >
           <FilePlus2 className="h-4 w-4" />
@@ -291,20 +307,25 @@ export function DocumentsClient({ initialDocs }: { initialDocs: Doc[] }) {
         <Button
           variant="ghost"
           disabled={busy}
-          className="min-h-11 gap-2"
+          className="min-h-12 touch-manipulation gap-2"
           onClick={() => setCreateType("pdf")}
         >
           <FileText className="h-4 w-4" />
           {t("newPdf")}
         </Button>
+        <Button
+          variant="ghost"
+          disabled={busy}
+          className="min-h-12 touch-manipulation gap-2"
+          onClick={() => setCreateType("xlsx")}
+        >
+          <FileSpreadsheet className="h-4 w-4" />
+          {t("newSheet")}
+        </Button>
       </div>
 
-      <div
-        role="button"
-        tabIndex={0}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") inputRef.current?.click();
-        }}
+      <label
+        htmlFor={uploadInputId}
         onDragEnter={(e) => {
           e.preventDefault();
           setDragOver(true);
@@ -320,22 +341,36 @@ export function DocumentsClient({ initialDocs }: { initialDocs: Doc[] }) {
         onDrop={(e) => {
           e.preventDefault();
           setDragOver(false);
+          if (uploading) return;
           const file = e.dataTransfer.files?.[0];
           if (file) void onUpload(file);
         }}
-        onClick={() => {
-          if (!busy) inputRef.current?.click();
-        }}
-        className={`mb-6 grid place-items-center rounded-2xl border border-dashed px-4 py-10 text-center transition-colors duration-200 ${
-          dragOver
-            ? "border-accent bg-accent-soft text-accent"
-            : "border-line bg-white/[0.03] text-muted hover:border-accent/40 hover:bg-white/[0.05]"
+        className={`mb-6 grid min-h-36 touch-manipulation place-items-center rounded-2xl border border-dashed px-4 py-10 text-center transition-colors duration-200 ${
+          uploading
+            ? "pointer-events-none border-accent/50 bg-accent-soft text-accent"
+            : dragOver
+              ? "cursor-copy border-accent bg-accent-soft text-accent"
+              : "cursor-pointer border-line bg-white/[0.03] text-muted hover:border-accent/40 hover:bg-white/[0.05]"
         }`}
       >
-        <FileUp className="mb-2 h-6 w-6 opacity-80" />
-        <p className="text-sm font-medium text-foreground">{t("dropTitle")}</p>
-        <p className="mt-1 max-w-sm text-xs">{t("dropBody")}</p>
-      </div>
+        {uploading ? (
+          <LoaderCircle className="mb-2 h-6 w-6 animate-spin opacity-90" />
+        ) : (
+          <FileUp className="mb-2 h-6 w-6 opacity-80" />
+        )}
+        <p className="text-sm font-medium text-foreground md:hidden">
+          {uploading ? t("uploading") : t("dropTitleMobile")}
+        </p>
+        <p className="mt-1 max-w-sm text-xs md:hidden">
+          {uploading ? "" : t("dropBodyMobile")}
+        </p>
+        <p className="hidden text-sm font-medium text-foreground md:block">
+          {uploading ? t("uploading") : t("dropTitle")}
+        </p>
+        <p className="mt-1 hidden max-w-sm text-xs md:block">
+          {uploading ? "" : t("dropBody")}
+        </p>
+      </label>
 
       <AnimatePresence mode="popLayout">
         {docs.length === 0 ? (
@@ -364,6 +399,7 @@ export function DocumentsClient({ initialDocs }: { initialDocs: Doc[] }) {
           >
             {docs.map((doc, index) => {
               const pdf = isPdfMime(doc.mimeType);
+              const xlsx = isXlsxMime(doc.mimeType);
               const rowBusy =
                 deletingId === doc.id || renamingId === doc.id;
               return (
@@ -383,6 +419,8 @@ export function DocumentsClient({ initialDocs }: { initialDocs: Doc[] }) {
                     <span className="mt-0.5 grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-accent-soft text-accent">
                       {pdf ? (
                         <FileText className="h-4 w-4" />
+                      ) : xlsx ? (
+                        <FileSpreadsheet className="h-4 w-4" />
                       ) : (
                         <FolderOpen className="h-4 w-4" />
                       )}
@@ -466,12 +504,27 @@ export function DocumentsClient({ initialDocs }: { initialDocs: Doc[] }) {
         open={createType !== null}
         mode="create"
         initialTitle={
-          createType === "pdf" ? t("newPdfTitle") : t("newDocTitle")
+          createType === "pdf"
+            ? t("newPdfTitle")
+            : createType === "xlsx"
+              ? t("newSheetTitle")
+              : t("newDocTitle")
         }
-        fileExtension={createType === "pdf" ? ".pdf" : ".docx"}
+        fileExtension={
+          createType === "pdf"
+            ? ".pdf"
+            : createType === "xlsx"
+              ? ".xlsx"
+              : ".docx"
+        }
         submitting={creating !== null}
         labels={{
-          title: createType === "pdf" ? t("createPdfFormTitle") : t("createDocFormTitle"),
+          title:
+            createType === "pdf"
+              ? t("createPdfFormTitle")
+              : createType === "xlsx"
+                ? t("createSheetFormTitle")
+                : t("createDocFormTitle"),
           nameLabel: t("fileNameLabel"),
           namePlaceholder: t("fileNamePlaceholder"),
           pathLabel: t("savePathLabel"),
@@ -493,7 +546,11 @@ export function DocumentsClient({ initialDocs }: { initialDocs: Doc[] }) {
         mode="rename"
         initialTitle={renameDoc?.title || ""}
         fileExtension={
-          isPdfMime(renameDoc?.mimeType) ? ".pdf" : ".docx"
+          isPdfMime(renameDoc?.mimeType)
+            ? ".pdf"
+            : isXlsxMime(renameDoc?.mimeType)
+              ? ".xlsx"
+              : ".docx"
         }
         submitting={renamingId !== null}
         labels={{

@@ -22,11 +22,15 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/components/ui/Button";
 import type { DocxCanvasHandle } from "@/components/editor/DocxCanvas";
+import type { ExcelEditorHandle } from "@/components/excel-editor/ExcelEditorClient";
 import { applyDocTool } from "@/lib/ai/apply-doc-tools";
+import { applySheetTool } from "@/lib/ai/apply-sheet-tools";
+import { validateSheetToolCall } from "@/lib/ai/sheet-tools";
 import {
   buildMultimodalUserContent,
   buildPersistableUserText,
   compressImageFile,
+  isAllowedChatImage,
   MAX_CHAT_IMAGES,
   type ChatImageAttachment,
 } from "@/lib/ai/chat-attachments";
@@ -64,6 +68,12 @@ const easeOut = [0.23, 1, 0.32, 1] as const;
 
 function collectDocumentContext(editor: DocxCanvasHandle | null) {
   return buildDocumentSnapshot(editor, 12_000);
+}
+
+function collectSheetContext(sheet: ExcelEditorHandle | null) {
+  const snap = sheet?.getActiveSnapshot?.();
+  if (!snap) return "";
+  return JSON.stringify(snap).slice(0, 12_000);
 }
 
 function parseSseBuffer(buffer: string): {
@@ -123,6 +133,8 @@ export function AiChatPanel({
   editorRef,
   onDocMutated,
   onTitleChanged,
+  docKind = "docx",
+  sheetRef,
 }: {
   open: boolean;
   onClose: () => void;
@@ -130,6 +142,8 @@ export function AiChatPanel({
   editorRef: React.RefObject<DocxCanvasHandle | null>;
   onDocMutated?: () => void;
   onTitleChanged?: (title: string) => void;
+  docKind?: "docx" | "pdf" | "xlsx";
+  sheetRef?: React.RefObject<ExcelEditorHandle | null>;
 }) {
   const t = useTranslations("aiChat");
   const locale = useLocale();
@@ -148,6 +162,8 @@ export function AiChatPanel({
     null,
   );
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
   const busy = status !== "idle";
 
   const speechLang = locale.startsWith("ar") ? "ar-EG" : "en-US";
@@ -243,10 +259,24 @@ export function AiChatPanel({
     el.scrollTop = el.scrollHeight;
   }, [input, micListening]);
 
+  useEffect(() => {
+    return () => {
+      // Revoke any leftover object URLs on unmount
+      attachmentsRef.current.forEach((a) => {
+        if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+      });
+    };
+  }, []);
+
   async function startNewConversation() {
     setConversationId(null);
     setMessages([]);
-    setAttachments([]);
+    setAttachments((prev) => {
+      for (const a of prev) {
+        if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+      }
+      return [];
+    });
   }
 
   async function removeConversation(id: string) {
@@ -306,9 +336,13 @@ export function AiChatPanel({
             documentId,
             conversationId: opts.convId,
             messages: opts.outgoing,
-            documentContext: collectDocumentContext(editorRef.current),
+            documentContext:
+              docKind === "xlsx"
+                ? collectSheetContext(sheetRef?.current || null)
+                : collectDocumentContext(editorRef.current),
             locale: locale.startsWith("ar") ? "ar" : "en",
             persistUserMessage: opts.persistUserMessage,
+            docKind,
           }),
         });
 
@@ -417,6 +451,27 @@ export function AiChatPanel({
                 name: tool.name,
               });
               continue;
+            }
+            if (docKind === "xlsx") {
+              const sheetValidated = validateSheetToolCall(tool.name, tool.args);
+              if (sheetValidated.ok) {
+                const result = applySheetTool(
+                  sheetRef?.current || null,
+                  sheetValidated.name,
+                  sheetValidated.args,
+                );
+                if (result.mutated) {
+                  applied += 1;
+                  onDocMutated?.();
+                }
+                toolMessages.push({
+                  role: "tool",
+                  content: result.result,
+                  tool_call_id: tool.id,
+                  name: tool.name,
+                });
+                continue;
+              }
             }
             const validated = validateToolCall(tool.name, tool.args);
             if (!validated.ok) {
@@ -643,7 +698,9 @@ export function AiChatPanel({
     },
     [
       documentId,
+      docKind,
       editorRef,
+      sheetRef,
       locale,
       loadConversations,
       onDocMutated,
@@ -661,25 +718,57 @@ export function AiChatPanel({
       return;
     }
     const picked = Array.from(files).slice(0, remaining);
-    const next: ChatImageAttachment[] = [];
+    if (fileInputRef.current) fileInputRef.current.value = "";
+
     for (const file of picked) {
+      if (!isAllowedChatImage(file, { fromImagePicker: true })) {
+        toast.error(t("attachmentUnsupported"));
+        continue;
+      }
+      const id = `img_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const previewUrl = URL.createObjectURL(file);
+      const pending: ChatImageAttachment = {
+        id,
+        name: file.name || "image",
+        mime: file.type || "image/jpeg",
+        dataUrl: "",
+        previewUrl,
+        pending: true,
+      };
+      setAttachments((prev) => [...prev, pending].slice(0, MAX_CHAT_IMAGES));
+
       try {
-        next.push(await compressImageFile(file));
+        const ready = await compressImageFile(file, { fromImagePicker: true });
+        setAttachments((prev) =>
+          prev.map((a) => {
+            if (a.id !== id) return a;
+            if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+            return { ...ready, id };
+          }),
+        );
       } catch (err) {
+        // Keep a visible failed chip briefly? Remove and toast.
+        setAttachments((prev) => {
+          const doomed = prev.find((a) => a.id === id);
+          if (doomed?.previewUrl) URL.revokeObjectURL(doomed.previewUrl);
+          return prev.filter((a) => a.id !== id);
+        });
         const code = err instanceof Error ? err.message : "";
         if (code === "UNSUPPORTED_IMAGE") toast.error(t("attachmentUnsupported"));
         else if (code === "IMAGE_TOO_LARGE") toast.error(t("attachmentTooLarge"));
+        else if (code === "IMAGE_CONVERT_FAILED")
+          toast.error(t("attachmentConvertFailed"));
         else toast.error(t("attachmentUnsupported"));
       }
     }
-    if (next.length) setAttachments((prev) => [...prev, ...next].slice(0, MAX_CHAT_IMAGES));
-    if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
   async function onSend(text?: string) {
     const content = (text ?? input).trim();
-    if ((!content && attachments.length === 0) || busy) return;
-    const currentAttachments = attachments;
+    const readyAttachments = attachments.filter((a) => a.dataUrl && !a.pending);
+    if ((!content && readyAttachments.length === 0) || busy) return;
+    if (attachments.some((a) => a.pending)) return;
+    const currentAttachments = readyAttachments;
     const displayText = buildPersistableUserText(
       content,
       currentAttachments,
@@ -687,7 +776,12 @@ export function AiChatPanel({
     );
     const multimodal = buildMultimodalUserContent(content, currentAttachments);
     setInput("");
-    setAttachments([]);
+    setAttachments((prev) => {
+      for (const a of prev) {
+        if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+      }
+      return [];
+    });
     const userMsg: ChatMsg = {
       id: `u_${Date.now()}`,
       role: "user",
@@ -709,7 +803,10 @@ export function AiChatPanel({
     [messages.length, busy],
   );
 
-  const canSend = Boolean(input.trim() || attachments.length) && !busy;
+  const canSend =
+    Boolean(input.trim() || attachments.some((a) => a.dataUrl && !a.pending)) &&
+    !busy &&
+    !attachments.some((a) => a.pending);
 
   return (
     <AnimatePresence>
@@ -874,7 +971,7 @@ export function AiChatPanel({
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="image/png,image/jpeg,image/webp,image/gif"
+                accept="image/*,.heic,.heif"
                 multiple
                 className="hidden"
                 onChange={(e) => void onPickImages(e.target.files)}
@@ -888,19 +985,38 @@ export function AiChatPanel({
                       className="relative h-14 w-14 overflow-hidden rounded-xl border border-line"
                     >
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={a.dataUrl}
-                        alt={a.name}
-                        className="h-full w-full object-cover"
-                      />
+                      {a.dataUrl || a.previewUrl ? (
+                        <img
+                          src={a.dataUrl || a.previewUrl || ""}
+                          alt={a.name}
+                          className={`h-full w-full object-cover ${a.pending ? "opacity-60" : ""}`}
+                          onError={(e) => {
+                            // HEIC object URLs may not render — show placeholder
+                            (e.currentTarget as HTMLImageElement).style.display =
+                              "none";
+                          }}
+                        />
+                      ) : (
+                        <div className="grid h-full w-full place-items-center bg-white/10 text-[9px] text-muted">
+                          IMG
+                        </div>
+                      )}
+                      {a.pending ? (
+                        <div className="absolute inset-0 grid place-items-center bg-black/25">
+                          <LoaderCircle className="h-4 w-4 animate-spin text-white" />
+                        </div>
+                      ) : null}
                       <button
                         type="button"
                         className="absolute end-0.5 top-0.5 grid h-5 w-5 place-items-center rounded-full bg-black/70 text-white"
                         aria-label={t("removeAttachment")}
                         onClick={() =>
-                          setAttachments((prev) =>
-                            prev.filter((x) => x.id !== a.id),
-                          )
+                          setAttachments((prev) => {
+                            const doomed = prev.find((x) => x.id === a.id);
+                            if (doomed?.previewUrl)
+                              URL.revokeObjectURL(doomed.previewUrl);
+                            return prev.filter((x) => x.id !== a.id);
+                          })
                         }
                       >
                         <X className="h-3 w-3" />
@@ -966,6 +1082,11 @@ export function AiChatPanel({
                       stop: t("micStop"),
                       unsupported: t("micUnsupported"),
                       listeningHint: t("micListening"),
+                      transcribing: t("micTranscribing"),
+                      recordFallback: t("micRecordFallback"),
+                      permissionDenied: t("micPermissionDenied"),
+                      emptyRecording: t("micEmptyRecording"),
+                      sttUnavailable: t("micSttUnavailable"),
                     }}
                     onDraftChange={setInput}
                     onListeningChange={setMicListening}

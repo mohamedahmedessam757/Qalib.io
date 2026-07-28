@@ -39,7 +39,7 @@ export function DocumentNameDialog({
   open: boolean;
   mode: "create" | "rename";
   initialTitle: string;
-  fileExtension: ".docx" | ".pdf";
+  fileExtension: ".docx" | ".pdf" | ".xlsx";
   labels: Labels;
   submitting?: boolean;
   onClose: () => void;

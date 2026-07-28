@@ -17,12 +17,14 @@ import { startMenuClampWatcher } from "@/lib/clamp-floating-menus";
 import { printDocxAsPdf } from "@/lib/print-docx";
 
 const PAGE_PAD = 16;
-const MIN_ZOOM = 0.35;
-const MAX_ZOOM = 1;
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 2;
 
 export type DocxCanvasHandle = DocxEditorRef & {
   fitToWidth: () => void;
   printDocument: () => Promise<void>;
+  adjustZoom: (delta: number) => number;
+  getZoomLevel: () => number;
 };
 
 type DocxCanvasProps = {
@@ -31,6 +33,7 @@ type DocxCanvasProps = {
   onChange?: () => void;
   onSelectionChange?: () => void;
   onReady?: () => void;
+  onZoomChange?: (zoom: number) => void;
 };
 
 function clampZoom(value: number) {
@@ -45,22 +48,48 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
       onChange,
       onSelectionChange,
       onReady,
+      onZoomChange,
     },
     ref,
   ) {
     const editorRef = useRef<DocxEditorRef | null>(null);
     const shellRef = useRef<HTMLDivElement | null>(null);
     const readyRef = useRef(false);
+    const autoFitRef = useRef(true);
+    const onZoomChangeRef = useRef(onZoomChange);
+    onZoomChangeRef.current = onZoomChange;
+
+    const reportZoom = useCallback(() => {
+      const z = editorRef.current?.getZoom?.() ?? 1;
+      onZoomChangeRef.current?.(z);
+      return z;
+    }, []);
 
     const fitToWidth = useCallback(() => {
       const editor = editorRef.current;
       const shell = shellRef.current;
       if (!editor || !shell) return;
 
+      autoFitRef.current = true;
       const layout = editor.getEditorRef()?.getLayout();
       const pageW = layout?.pageSize?.w ?? 816;
       const available = Math.max(shell.clientWidth - PAGE_PAD, 120);
       editor.setZoom(clampZoom(available / pageW));
+      reportZoom();
+    }, [reportZoom]);
+
+    const adjustZoom = useCallback((delta: number) => {
+      const editor = editorRef.current;
+      if (!editor) return 1;
+      autoFitRef.current = false;
+      const next = clampZoom((editor.getZoom?.() ?? 1) + delta);
+      editor.setZoom(next);
+      onZoomChangeRef.current?.(next);
+      return next;
+    }, []);
+
+    const getZoomLevel = useCallback(() => {
+      return editorRef.current?.getZoom?.() ?? 1;
     }, []);
 
     const printDocument = useCallback(async () => {
@@ -84,23 +113,26 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
           get(_target, prop) {
             if (prop === "fitToWidth") return fitToWidth;
             if (prop === "printDocument") return printDocument;
-            if (prop === "print") return () => {
-              void printDocument();
-            };
+            if (prop === "adjustZoom") return adjustZoom;
+            if (prop === "getZoomLevel") return getZoomLevel;
+            if (prop === "print")
+              return () => {
+                void printDocument();
+              };
             const editor = editorRef.current;
             if (!editor) return undefined;
             const value = Reflect.get(editor, prop, editor);
             return typeof value === "function" ? value.bind(editor) : value;
           },
         }),
-      [fitToWidth, printDocument],
+      [fitToWidth, printDocument, adjustZoom, getZoomLevel],
     );
 
     useEffect(() => {
       const shell = shellRef.current;
       if (!shell) return;
       const ro = new ResizeObserver(() => {
-        if (readyRef.current) fitToWidth();
+        if (readyRef.current && autoFitRef.current) fitToWidth();
       });
       ro.observe(shell);
       return () => ro.disconnect();
@@ -150,7 +182,7 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
             void printDocument();
           }}
           onFontsLoaded={() => {
-            if (readyRef.current) fitToWidth();
+            if (readyRef.current && autoFitRef.current) fitToWidth();
           }}
           className="h-full min-h-full"
         />

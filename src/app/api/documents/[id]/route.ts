@@ -2,10 +2,12 @@ import { NextResponse } from "next/server";
 import {
   DOCX_MIME,
   isPdfMime,
+  isXlsxMime,
   MAX_UPLOAD_BYTES,
   PDF_MIME,
   sanitizeTitle,
   STORAGE_BUCKET,
+  XLSX_MIME,
 } from "@/lib/documents";
 import { getDocumentForOwner, requireUser } from "@/lib/db";
 import { prisma } from "@/lib/prisma";
@@ -87,7 +89,11 @@ export async function PUT(request: Request, { params }: Params) {
     return NextResponse.json({ error: "File too large" }, { status: 400 });
   }
 
-  const mimeType = isPdfMime(doc.mimeType) ? PDF_MIME : DOCX_MIME;
+  const mimeType = isPdfMime(doc.mimeType)
+    ? PDF_MIME
+    : isXlsxMime(doc.mimeType)
+      ? XLSX_MIME
+      : DOCX_MIME;
 
   const { error: uploadError } = await supabase.storage
     .from(STORAGE_BUCKET)

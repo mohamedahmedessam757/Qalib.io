@@ -20,15 +20,18 @@ export function PdfCanvas({
   overlays,
   selectedId,
   tool,
+  zoom = 1,
   onSelectOverlay,
   onAddAt,
   onReplaceText,
   onMoveOverlay,
+  onResizeOverlay,
 }: {
   buffer: ArrayBuffer;
   overlays: PdfOverlay[];
   selectedId: string | null;
-  tool: "select" | "text" | "image" | "table" | "whiteout";
+  tool: string;
+  zoom?: number;
   onSelectOverlay: (id: string | null) => void;
   onAddAt: (pageIndex: number, x: number, y: number) => void;
   onReplaceText: (
@@ -37,6 +40,7 @@ export function PdfCanvas({
     text: string,
   ) => void;
   onMoveOverlay: (id: string, x: number, y: number) => void;
+  onResizeOverlay?: (id: string, w: number, h: number) => void;
 }) {
   const [pageCount, setPageCount] = useState(0);
   const [pageSizes, setPageSizes] = useState<PageSize[]>([]);
@@ -147,7 +151,13 @@ export function PdfCanvas({
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-[920px] flex-col gap-4 p-3 sm:p-4">
+    <div
+      className="mx-auto flex w-full max-w-[920px] flex-col gap-4 p-3 sm:p-4"
+      style={{
+        transform: `scale(${zoom})`,
+        transformOrigin: "top center",
+      }}
+    >
       {Array.from({ length: pageCount }, (_, pageIndex) => {
         const size = pageSizes[pageIndex];
         const pageOverlays = overlays.filter((o) => o.pageIndex === pageIndex);
@@ -314,6 +324,75 @@ export function PdfCanvas({
                         </div>
                       ))}
                     </div>
+                  ) : null}
+                  {overlay.type === "rect" || overlay.type === "border" ? (
+                    <div
+                      className="h-full w-full"
+                      style={{
+                        borderStyle: "solid",
+                        borderWidth:
+                          overlay.type === "border"
+                            ? Math.max(2, overlay.strokeWidth)
+                            : overlay.strokeWidth,
+                        borderColor: overlay.stroke,
+                        backgroundColor:
+                          (overlay.fillOpacity ?? 0) > 0
+                            ? overlay.fill || overlay.stroke
+                            : "transparent",
+                        opacity:
+                          (overlay.fillOpacity ?? 0) > 0
+                            ? Math.max(overlay.fillOpacity || 0.12, 0.08)
+                            : 1,
+                      }}
+                    />
+                  ) : null}
+                  {overlay.type === "line" ? (
+                    <div
+                      className="absolute inset-x-0 top-1/2 -translate-y-1/2"
+                      style={{
+                        height: Math.max(2, overlay.strokeWidth),
+                        backgroundColor: overlay.stroke,
+                      }}
+                    />
+                  ) : null}
+                  {selected && onResizeOverlay ? (
+                    <button
+                      type="button"
+                      className="absolute -bottom-1.5 -end-1.5 h-3.5 w-3.5 rounded-sm border border-accent bg-white"
+                      aria-label="Resize"
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        const parent = e.currentTarget.parentElement?.parentElement;
+                        if (!parent) return;
+                        const start = normFromEvent(
+                          pageIndex,
+                          e.clientX,
+                          e.clientY,
+                          parent,
+                        );
+                        const startW = overlay.w;
+                        const startH = overlay.h;
+                        const onMove = (ev: PointerEvent) => {
+                          const pos = normFromEvent(
+                            pageIndex,
+                            ev.clientX,
+                            ev.clientY,
+                            parent,
+                          );
+                          onResizeOverlay(
+                            overlay.id,
+                            Math.max(0.04, startW + (pos.x - start.x)),
+                            Math.max(0.02, startH + (pos.y - start.y)),
+                          );
+                        };
+                        const onUp = () => {
+                          window.removeEventListener("pointermove", onMove);
+                          window.removeEventListener("pointerup", onUp);
+                        };
+                        window.addEventListener("pointermove", onMove);
+                        window.addEventListener("pointerup", onUp);
+                      }}
+                    />
                   ) : null}
                 </div>
               );

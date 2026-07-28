@@ -14,6 +14,7 @@ import {
   ArrowRight,
   CloudUpload,
   Download,
+  FilePlus2,
   LoaderCircle,
   MoreVertical,
   Trash2,
@@ -21,6 +22,7 @@ import {
 } from "lucide-react";
 import { Link } from "@/i18n/navigation";
 import { Button } from "@/components/ui/Button";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { PDF_MIME } from "@/lib/documents";
 import {
   getCachedDocumentMeta,
@@ -30,6 +32,7 @@ import {
   createId,
   exportPdfWithOverlays,
   type PdfOverlay,
+  type ShapeOverlay,
   type TextOverlay,
 } from "@/lib/pdf/export-overlays";
 import { PdfToolbar, type PdfTool } from "./PdfToolbar";
@@ -67,6 +70,11 @@ export function PdfEditorClient({
     "idle" | "saving" | "saved" | "error"
   >("idle");
   const [menuOpen, setMenuOpen] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const [pageIndex, setPageIndex] = useState(0);
+  const [pageCount, setPageCount] = useState(1);
+  const [deletePageOpen, setDeletePageOpen] = useState(false);
+  const [deletingPage, setDeletingPage] = useState(false);
   const [pending, startTransition] = useTransition();
   const dirtyRef = useRef(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -258,6 +266,26 @@ export function PdfEditorClient({
       setSelectedId(overlay.id);
       setTool("select");
       markDirty();
+      return;
+    }
+    if (tool === "rect" || tool === "border" || tool === "line") {
+      const overlay: ShapeOverlay = {
+        id: createId(tool),
+        type: tool,
+        pageIndex,
+        x: Math.min(x, 0.55),
+        y: Math.min(y, 0.75),
+        w: tool === "line" ? 0.35 : 0.32,
+        h: tool === "line" ? 0.02 : 0.18,
+        stroke: color,
+        strokeWidth: tool === "border" ? 2.5 : 1.5,
+        fill: color,
+        fillOpacity: tool === "rect" ? 0.12 : 0,
+      };
+      pushHistory([...overlays, overlay]);
+      setSelectedId(overlay.id);
+      setTool("select");
+      markDirty();
     }
   }
 
@@ -299,6 +327,78 @@ export function PdfEditorClient({
       ),
     );
     markDirty();
+  }
+
+  function onResizeOverlay(id: string, w: number, h: number) {
+    setOverlays((prev) =>
+      prev.map((o) =>
+        o.id === id
+          ? {
+              ...o,
+              w: Math.min(1 - o.x, Math.max(0.04, w)),
+              h: Math.min(1 - o.y, Math.max(0.02, h)),
+            }
+          : o,
+      ),
+    );
+    markDirty();
+  }
+
+  async function onAddBlankPage() {
+    if (!buffer) return;
+    try {
+      const { PDFDocument } = await import("pdf-lib");
+      const pdf = await PDFDocument.load(buffer.slice(0));
+      const last = pdf.getPage(pdf.getPageCount() - 1);
+      const { width, height } = last.getSize();
+      pdf.addPage([width, height]);
+      const bytes = await pdf.save();
+      const next = Uint8Array.from(bytes).buffer;
+      setBuffer(next);
+      setOverlays([]);
+      setHistory([]);
+      setPageCount(pdf.getPageCount());
+      setPageIndex(pdf.getPageCount() - 1);
+      dirtyRef.current = true;
+      markDirty();
+      toast.success(t("pageAdd"));
+    } catch {
+      toast.error(t("saveError"));
+    }
+  }
+
+  async function onConfirmDeletePage() {
+    if (!buffer || pageCount <= 1) {
+      setDeletePageOpen(false);
+      return;
+    }
+    setDeletingPage(true);
+    try {
+      const { PDFDocument } = await import("pdf-lib");
+      const pdf = await PDFDocument.load(buffer.slice(0));
+      const idx = Math.min(pageIndex, pdf.getPageCount() - 1);
+      pdf.removePage(idx);
+      const bytes = await pdf.save();
+      const next = Uint8Array.from(bytes).buffer;
+      setBuffer(next);
+      setOverlays((prev) =>
+        prev
+          .filter((o) => o.pageIndex !== idx)
+          .map((o) =>
+            o.pageIndex > idx ? { ...o, pageIndex: o.pageIndex - 1 } : o,
+          ),
+      );
+      setHistory([]);
+      setPageCount(pdf.getPageCount());
+      setPageIndex(Math.max(0, Math.min(idx, pdf.getPageCount() - 1)));
+      dirtyRef.current = true;
+      markDirty();
+      setDeletePageOpen(false);
+    } catch {
+      toast.error(t("saveError"));
+    } finally {
+      setDeletingPage(false);
+    }
   }
 
   async function onDownload() {
@@ -355,6 +455,27 @@ export function PdfEditorClient({
           </div>
 
           <div className="relative flex items-center gap-1 sm:gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0"
+              onClick={() => void onAddBlankPage()}
+              aria-label={t("pageAdd")}
+              title={t("pageAdd")}
+            >
+              <FilePlus2 className="h-4 w-4" />
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0"
+              disabled={pageCount <= 1}
+              onClick={() => setDeletePageOpen(true)}
+              aria-label={t("pageDelete")}
+              title={t("pageDelete")}
+            >
+              <Trash2 className="h-4 w-4 text-danger" />
+            </Button>
             <Button
               size="sm"
               variant="ghost"
@@ -446,18 +567,28 @@ export function PdfEditorClient({
             tool={tool}
             fontSize={fontSize}
             color={color}
+            zoom={zoom}
             labels={{
               select: t("toolSelect"),
               text: t("toolText"),
               image: t("toolImage"),
               table: t("toolTable"),
               whiteout: t("toolWhiteout"),
+              rect: t("toolRect"),
+              border: t("toolBorder"),
+              line: t("toolLine"),
               fontSize: t("fontSize"),
               fontColor: t("fontColor"),
+              zoomIn: t("zoomIn"),
+              zoomOut: t("zoomOut"),
             }}
             onTool={setTool}
             onFontSize={setFontSize}
             onColor={setColor}
+            onZoomIn={() => setZoom((z) => Math.min(2, Math.round((z + 0.1) * 10) / 10))}
+            onZoomOut={() =>
+              setZoom((z) => Math.max(0.75, Math.round((z - 0.1) * 10) / 10))
+            }
             onPickImage={() => {
               setTool("image");
               imageInputRef.current?.click();
@@ -508,10 +639,21 @@ export function PdfEditorClient({
                 overlays={overlays}
                 selectedId={selectedId}
                 tool={tool}
-                onSelectOverlay={setSelectedId}
-                onAddAt={onAddAt}
+                zoom={zoom}
+                onSelectOverlay={(id) => {
+                  setSelectedId(id);
+                  if (id) {
+                    const o = overlays.find((x) => x.id === id);
+                    if (o) setPageIndex(o.pageIndex);
+                  }
+                }}
+                onAddAt={(idx, x, y) => {
+                  setPageIndex(idx);
+                  onAddAt(idx, x, y);
+                }}
                 onReplaceText={onReplaceText}
                 onMoveOverlay={onMoveOverlay}
+                onResizeOverlay={onResizeOverlay}
               />
               {selected?.type === "text" ? (
                 <div className="sticky bottom-0 border-t border-line bg-[#0a1220]/95 px-3 py-3 backdrop-blur">
@@ -565,6 +707,17 @@ export function PdfEditorClient({
                   </div>
                 </div>
               ) : null}
+              <ConfirmDialog
+                open={deletePageOpen}
+                title={t("pageDeleteConfirm")}
+                warning={t("pageDeleteWarning")}
+                confirmLabel={t("pageDelete")}
+                cancelLabel={t("cancel")}
+                danger
+                submitting={deletingPage}
+                onClose={() => setDeletePageOpen(false)}
+                onConfirm={() => void onConfirmDeletePage()}
+              />
             </>
           )}
         </div>

@@ -35,11 +35,21 @@ export type TableOverlay = PdfOverlayBase & {
   cells: string[];
 };
 
+export type ShapeOverlay = PdfOverlayBase & {
+  type: "rect" | "border" | "line";
+  stroke: string;
+  strokeWidth: number;
+  /** 0–1 fill opacity; 0 = none */
+  fillOpacity?: number;
+  fill?: string;
+};
+
 export type PdfOverlay =
   | TextOverlay
   | ImageOverlay
   | WhiteoutOverlay
-  | TableOverlay;
+  | TableOverlay
+  | ShapeOverlay;
 
 function hexToRgb(hex: string) {
   const clean = hex.replace("#", "");
@@ -209,6 +219,37 @@ export async function exportPdfWithOverlays(
             }
           }
         }
+      }
+    }
+
+    if (
+      overlay.type === "rect" ||
+      overlay.type === "border" ||
+      overlay.type === "line"
+    ) {
+      const stroke = hexToRgb(overlay.stroke || "#0f766e");
+      const sw = Math.max(0.5, Math.min(overlay.strokeWidth || 1.5, 12));
+      if (overlay.type === "line") {
+        page.drawLine({
+          start: { x, y: y + h / 2 },
+          end: { x: x + w, y: y + h / 2 },
+          thickness: sw,
+          color: rgb(stroke.r, stroke.g, stroke.b),
+        });
+      } else {
+        const fillOp = overlay.fillOpacity ?? (overlay.type === "rect" ? 0.12 : 0);
+        const fill = hexToRgb(overlay.fill || overlay.stroke || "#0f766e");
+        page.drawRectangle({
+          x,
+          y,
+          width: w,
+          height: h,
+          borderColor: rgb(stroke.r, stroke.g, stroke.b),
+          borderWidth: overlay.type === "border" ? Math.max(sw, 2) : sw,
+          color: fillOp > 0 ? rgb(fill.r, fill.g, fill.b) : undefined,
+          opacity: fillOp > 0 ? fillOp : undefined,
+          borderOpacity: 1,
+        });
       }
     }
   }

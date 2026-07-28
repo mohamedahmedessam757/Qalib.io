@@ -1,4 +1,4 @@
-import { isPdfMime } from "@/lib/documents";
+import { editorPathForMime } from "@/lib/documents";
 
 export type LibraryToolResult = {
   ok: boolean;
@@ -8,7 +8,7 @@ export type LibraryToolResult = {
 };
 
 function editorPath(doc: { id: string; mimeType?: string }) {
-  return isPdfMime(doc.mimeType) ? `/editor/pdf/${doc.id}` : `/editor/${doc.id}`;
+  return editorPathForMime(doc.id, doc.mimeType);
 }
 
 export async function applyLibraryTool(
@@ -54,7 +54,8 @@ export async function applyLibraryTool(
         typeof args.title === "string" && args.title.trim()
           ? args.title.trim().slice(0, 200)
           : undefined;
-      const type = args.type === "pdf" ? "pdf" : "docx";
+      const type =
+        args.type === "pdf" ? "pdf" : args.type === "xlsx" ? "xlsx" : "docx";
       const open = args.open !== false;
       const res = await fetch("/api/documents", {
         method: "POST",

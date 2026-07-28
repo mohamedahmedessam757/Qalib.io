@@ -17,10 +17,13 @@ import {
   CloudUpload,
   Download,
   FileDown,
+  FilePlus2,
   ListTree,
   LoaderCircle,
+  Minus,
   MoreVertical,
   Pencil,
+  Plus,
   Scan,
 } from "lucide-react";
 import { Link } from "@/i18n/navigation";
@@ -110,6 +113,8 @@ export function DocxEditorClient({
   const [jumpOpen, setJumpOpen] = useState(false);
   const [jumpItems, setJumpItems] = useState<ParagraphJumpItem[]>([]);
   const [aiOpen, setAiOpen] = useState(false);
+  const [zoomPct, setZoomPct] = useState(100);
+  const [mobileHasSelection, setMobileHasSelection] = useState(false);
   const dirtyRef = useRef(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -257,16 +262,33 @@ export function DocxEditorClient({
     if (selectionTimer.current) clearTimeout(selectionTimer.current);
     selectionTimer.current = setTimeout(() => {
       const info = editorRef.current?.getSelectionInfo();
-      if (!info?.paraId) return;
-      const hasSelection =
-        Boolean(info.selectedText?.trim()) ||
-        Boolean(info.paragraphText?.trim());
-      if (!hasSelection) return;
-      if (info.selectedText && info.selectedText.trim().length > 0) {
-        openSelectionSheet();
+      if (!info?.paraId) {
+        setMobileHasSelection(false);
+        return;
       }
+      const selected = Boolean(info.selectedText?.trim());
+      setMobileHasSelection(selected);
+      if (!selected) return;
+      // Keep sheet open if already editing; otherwise open for the selection
+      if (!sheetOpen) openSelectionSheet();
     }, 280);
-  }, [isMobile, openSelectionSheet]);
+  }, [isMobile, openSelectionSheet, sheetOpen]);
+
+  function onZoomOut() {
+    const z = editorRef.current?.adjustZoom?.(-0.1) ?? 1;
+    setZoomPct(Math.round(z * 100));
+  }
+
+  function onZoomIn() {
+    const z = editorRef.current?.adjustZoom?.(0.1) ?? 1;
+    setZoomPct(Math.round(z * 100));
+  }
+
+  function onFit() {
+    editorRef.current?.fitToWidth();
+    const z = editorRef.current?.getZoomLevel?.() ?? 1;
+    setZoomPct(Math.round(z * 100));
+  }
 
   async function onDownload() {
     setMenuOpen(false);
@@ -290,10 +312,6 @@ export function DocxEditorClient({
     } catch {
       editorRef.current?.print?.();
     }
-  }
-
-  function onFit() {
-    editorRef.current?.fitToWidth();
   }
 
   function collectParagraphs(): ParagraphJumpItem[] {
@@ -390,6 +408,31 @@ export function DocxEditorClient({
           </div>
 
           <div className="relative flex items-center gap-1 sm:gap-2">
+            <div className="flex items-center gap-0.5 rounded-xl border border-line bg-white/[0.03] px-0.5">
+              <Button
+                size="sm"
+                variant="ghost"
+                className="min-h-11 min-w-10 px-1.5 sm:min-h-9 sm:min-w-8"
+                onClick={onZoomOut}
+                aria-label={t("zoomOut")}
+                title={t("zoomOut")}
+              >
+                <Minus className="h-4 w-4" />
+              </Button>
+              <span className="min-w-[2.75rem] text-center text-[11px] tabular-nums text-muted">
+                {zoomPct}%
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="min-h-11 min-w-10 px-1.5 sm:min-h-9 sm:min-w-8"
+                onClick={onZoomIn}
+                aria-label={t("zoomIn")}
+                title={t("zoomIn")}
+              >
+                <Plus className="h-4 w-4" />
+              </Button>
+            </div>
             <Button
               size="sm"
               variant="ghost"
@@ -406,6 +449,38 @@ export function DocxEditorClient({
               variant="ghost"
               className="min-h-11 min-w-11 gap-1.5 px-2 sm:min-h-0 sm:min-w-0"
               onClick={() => {
+                const editor = editorRef.current;
+                if (!editor) return;
+                const info = editor.getSelectionInfo?.();
+                const paraId =
+                  info?.paraId ||
+                  (() => {
+                    const content = editor.getPageContent?.(1);
+                    return content?.paragraphs?.[0]?.paraId;
+                  })();
+                if (!paraId) {
+                  toast.message(t("editSelectionHint"));
+                  return;
+                }
+                const ok = editor.insertBreak?.({ paraId, type: "page" });
+                if (ok === false) {
+                  toast.error(t("applyError"));
+                  return;
+                }
+                markDirty();
+                toast.success(t("pageAdd"));
+              }}
+              aria-label={t("pageAdd")}
+              title={t("pageAdd")}
+            >
+              <FilePlus2 className="h-4 w-4" />
+              <span className="hidden lg:inline">{t("pageAdd")}</span>
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="min-h-11 min-w-11 gap-1.5 px-2 sm:min-h-0 sm:min-w-0"
+              onClick={() => {
                 setJumpItems(collectParagraphs());
                 setJumpOpen(true);
               }}
@@ -416,8 +491,10 @@ export function DocxEditorClient({
             </Button>
             <Button
               size="sm"
-              variant="ghost"
-              className="min-h-11 min-w-11 gap-1.5 px-2 sm:min-h-0 sm:min-w-0"
+              variant={mobileHasSelection ? "solid" : "ghost"}
+              className={`min-h-11 min-w-11 gap-1.5 px-2 sm:min-h-0 sm:min-w-0 ${
+                mobileHasSelection ? "ring-1 ring-accent/50" : ""
+              }`}
               onClick={() => {
                 setMenuOpen(false);
                 openSelectionSheet();
@@ -551,6 +628,7 @@ export function DocxEditorClient({
               compactChrome={isMobile}
               onChange={markDirty}
               onSelectionChange={onSelectionChange}
+              onZoomChange={(z) => setZoomPct(Math.round(z * 100))}
               onReady={() => {
                 onFit();
               }}
@@ -573,6 +651,7 @@ export function DocxEditorClient({
         onClose={() => {
           setSheetOpen(false);
           setDraft(null);
+          setMobileHasSelection(false);
         }}
         onApply={onApplyParagraph}
         onDelete={onDeleteParagraph}

@@ -1,4 +1,5 @@
 import type { OpenRouterTool } from "./openrouter";
+import { sheetTools } from "./sheet-tools";
 
 export const DOC_TOOL_NAMES = [
   "read_document",
@@ -448,13 +449,13 @@ export const documentTools: OpenRouterTool[] = [
     function: {
       name: "create_document",
       description:
-        "Create a new blank Word (docx) or PDF document in the library. open=true navigates to it.",
+        "Create a new blank Word (docx), PDF, or Excel (xlsx) document in the library. open=true navigates to it.",
       parameters: {
         type: "object",
         additionalProperties: false,
         properties: {
           title: { type: "string", maxLength: 200 },
-          type: { type: "string", enum: ["docx", "pdf"] },
+          type: { type: "string", enum: ["docx", "pdf", "xlsx"] },
           open: { type: "boolean" },
         },
       },
@@ -644,7 +645,7 @@ export type ValidatedToolCall =
   | { name: "list_documents"; args: Record<string, never> }
   | {
       name: "create_document";
-      args: { title?: string; type?: "docx" | "pdf"; open?: boolean };
+      args: { title?: string; type?: "docx" | "pdf" | "xlsx"; open?: boolean };
     }
   | {
       name: "rename_document";
@@ -964,7 +965,12 @@ export function validateToolCall(
     }
     case "create_document": {
       const title = asString(argsObj.title, 200)?.trim() || undefined;
-      const type = argsObj.type === "pdf" ? "pdf" : "docx";
+      const type =
+        argsObj.type === "pdf"
+          ? "pdf"
+          : argsObj.type === "xlsx"
+            ? "xlsx"
+            : "docx";
       const open = argsObj.open !== false;
       return {
         ok: true,
@@ -999,3 +1005,13 @@ export const MAX_MESSAGE_CHARS = 20_000;
 export const MAX_CONTEXT_CHARS = 28_000;
 export const MAX_HISTORY_MESSAGES = 24;
 export const MAX_TOOL_ROUNDS = 6;
+
+export function toolsForDocKind(kind: "docx" | "pdf" | "xlsx" = "docx") {
+  if (kind === "xlsx") {
+    const libraryOnly = documentTools.filter((t) =>
+      LIBRARY_TOOLS.has(t.function.name as DocToolName),
+    );
+    return [...sheetTools, ...libraryOnly];
+  }
+  return documentTools;
+}

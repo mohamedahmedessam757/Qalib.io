@@ -1,10 +1,10 @@
 import { setRequestLocale } from "next-intl/server";
 import { notFound, redirect } from "next/navigation";
-import { DocxEditorClient } from "@/components/editor/DocxEditorClient";
+import { ExcelEditorClient } from "@/components/excel-editor/ExcelEditorClient";
 import { getDocumentForOwner, requireUser } from "@/lib/db";
-import { isPdfMime, isXlsxMime } from "@/lib/documents";
+import { isXlsxMime } from "@/lib/documents";
 
-export default async function EditorPage({
+export default async function SheetEditorPage({
   params,
 }: {
   params: Promise<{ locale: string; id: string }>;
@@ -20,12 +20,12 @@ export default async function EditorPage({
   const doc = await getDocumentForOwner(id, user.id);
   if (!doc) notFound();
 
-  if (isPdfMime(doc.mimeType)) {
-    redirect(`/${locale}/editor/pdf/${doc.id}`);
-  }
-  if (isXlsxMime(doc.mimeType)) {
-    redirect(`/${locale}/editor/sheet/${doc.id}`);
+  if (!isXlsxMime(doc.mimeType)) {
+    if (doc.mimeType?.includes("pdf")) {
+      redirect(`/${locale}/editor/pdf/${doc.id}`);
+    }
+    redirect(`/${locale}/editor/${doc.id}`);
   }
 
-  return <DocxEditorClient documentId={doc.id} title={doc.title} />;
+  return <ExcelEditorClient documentId={doc.id} title={doc.title} />;
 }

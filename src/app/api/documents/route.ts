@@ -1,16 +1,21 @@
 import { NextResponse } from "next/server";
 import {
+  createBlankDocxBuffer,
+} from "@/lib/blank-docx";
+import { createBlankPdfBuffer } from "@/lib/blank-pdf";
+import { createBlankXlsxBuffer } from "@/lib/blank-xlsx";
+import {
   createDocumentId,
   DOCX_MIME,
   isDocxFile,
   isPdfFile,
+  isXlsxFile,
   MAX_UPLOAD_BYTES,
   PDF_MIME,
   sanitizeTitle,
   STORAGE_BUCKET,
+  XLSX_MIME,
 } from "@/lib/documents";
-import { createBlankDocxBuffer } from "@/lib/blank-docx";
-import { createBlankPdfBuffer } from "@/lib/blank-pdf";
 import {
   ensureProfile,
   listDocumentsForOwner,
@@ -126,10 +131,17 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: "Invalid action" }, { status: 400 });
       }
 
-      const kind = body.type === "pdf" ? "pdf" : "docx";
+      const kind =
+        body.type === "pdf" ? "pdf" : body.type === "xlsx" ? "xlsx" : "docx";
       const id = createDocumentId();
-      const title =
-        sanitizeTitle(body.title || (kind === "pdf" ? "مستند PDF جديد" : "مستند جديد"));
+      const title = sanitizeTitle(
+        body.title ||
+          (kind === "pdf"
+            ? "مستند PDF جديد"
+            : kind === "xlsx"
+              ? "جدول جديد"
+              : "مستند جديد"),
+      );
 
       if (kind === "pdf") {
         const buffer = await createBlankPdfBuffer(title);
@@ -141,6 +153,24 @@ export async function POST(request: Request) {
           title,
           storagePath,
           mimeType: PDF_MIME,
+          buffer,
+        });
+        if ("error" in result && result.error) {
+          return NextResponse.json({ error: result.error }, { status: 500 });
+        }
+        return NextResponse.json(result);
+      }
+
+      if (kind === "xlsx") {
+        const buffer = await createBlankXlsxBuffer(title);
+        const storagePath = `${user.id}/${id}.xlsx`;
+        const result = await persistDocument({
+          supabase,
+          userId: user.id,
+          id,
+          title,
+          storagePath,
+          mimeType: XLSX_MIME,
           buffer,
         });
         if ("error" in result && result.error) {
@@ -193,6 +223,23 @@ export async function POST(request: Request) {
       title,
       storagePath,
       mimeType: PDF_MIME,
+      buffer,
+    });
+    if ("error" in result && result.error) {
+      return NextResponse.json({ error: result.error }, { status: 500 });
+    }
+    return NextResponse.json(result);
+  }
+
+  if (isXlsxFile(file)) {
+    const storagePath = `${user.id}/${id}.xlsx`;
+    const result = await persistDocument({
+      supabase,
+      userId: user.id,
+      id,
+      title,
+      storagePath,
+      mimeType: XLSX_MIME,
       buffer,
     });
     if ("error" in result && result.error) {

@@ -1,6 +1,6 @@
 import { getDocumentForOwner, requireUser } from "@/lib/db";
 import { aiRateLimit } from "@/lib/ai/rate-limit";
-import { buildSystemPrompt } from "@/lib/ai/prompts";
+import { buildSystemPrompt, buildSheetSystemPrompt } from "@/lib/ai/prompts";
 import {
   type ChatContentPart,
   type ChatMessage,
@@ -11,10 +11,10 @@ import {
   openRouterChat,
 } from "@/lib/ai/openrouter";
 import {
-  documentTools,
   MAX_CONTEXT_CHARS,
   MAX_HISTORY_MESSAGES,
   MAX_MESSAGE_CHARS,
+  toolsForDocKind,
   validateToolCall,
 } from "@/lib/ai/tools";
 import {
@@ -142,6 +142,7 @@ async function handleChat(request: Request) {
     documentContext?: string;
     locale?: "ar" | "en";
     persistUserMessage?: boolean;
+    docKind?: "docx" | "pdf" | "xlsx";
   } | null;
 
   const documentId = body?.documentId;
@@ -149,6 +150,16 @@ async function handleChat(request: Request) {
 
   const doc = await getDocumentForOwner(documentId, user.id);
   if (!doc) return jsonError("Not found", 404);
+
+  const docKind =
+    body?.docKind === "xlsx" || body?.docKind === "pdf" || body?.docKind === "docx"
+      ? body.docKind
+      : doc.mimeType?.includes("sheet")
+        ? "xlsx"
+        : doc.mimeType?.includes("pdf")
+          ? "pdf"
+          : "docx";
+  const activeTools = toolsForDocKind(docKind);
 
   const incomingRaw = Array.isArray(body?.messages) ? body!.messages : [];
   if (incomingRaw.length === 0) return jsonError("messages required", 400);
@@ -305,12 +316,21 @@ async function handleChat(request: Request) {
   }
 
   const messages: ChatMessage[] = [
-    { role: "system", content: buildSystemPrompt(locale) },
+    {
+      role: "system",
+      content:
+        docKind === "xlsx"
+          ? buildSheetSystemPrompt(locale)
+          : buildSystemPrompt(locale),
+    },
     ...(context
       ? [
           {
             role: "system" as const,
-            content: `LIVE DOCUMENT SNAPSHOT (real file — never say empty if paragraphs appear; refresh via read_document):\n${context}`,
+            content:
+              docKind === "xlsx"
+                ? `LIVE SHEET SNAPSHOT:\n${context}`
+                : `LIVE DOCUMENT SNAPSHOT (real file — never say empty if paragraphs appear; refresh via read_document):\n${context}`,
           },
         ]
       : []),
@@ -339,7 +359,7 @@ async function handleChat(request: Request) {
       try {
         const res = await openRouterChat({
           messages,
-          tools: documentTools,
+          tools: activeTools,
           stream: true,
           signal: request.signal,
         });
