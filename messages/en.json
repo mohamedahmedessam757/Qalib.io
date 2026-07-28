@@ -94,6 +94,8 @@
     "zoomIn": "Zoom in",
     "zoomOut": "Zoom out",
     "pageAdd": "Add page",
+    "pageAddShort": "Page",
+    "editShort": "Edit",
     "pageDelete": "Delete page",
     "pageDeleteConfirm": "Delete this page?",
     "pageDeleteWarning": "This removes the current PDF page permanently after save. This cannot be undone easily.",

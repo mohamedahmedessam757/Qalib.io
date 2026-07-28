@@ -191,6 +191,38 @@ a {
     min-width: 40px;
   }
 
+  /* Center page canvas; kill wasted side gutters on mobile */
+  .docx-shell[data-compact="true"] {
+    background: #070b14 !important;
+  }
+
+  .docx-shell[data-compact="true"] .ep-root {
+    background: #070b14 !important;
+  }
+
+  .docx-shell[data-compact="true"] .ep-root > div {
+    max-width: 100vw !important;
+  }
+
+  /* Common Eigenpal page wrappers — keep page centered in the shell */
+  .docx-shell[data-compact="true"] [class*="Page"],
+  .docx-shell[data-compact="true"] [class*="page-"],
+  .docx-shell[data-compact="true"] [data-page],
+  .docx-shell[data-compact="true"] .ProseMirror {
+    margin-inline: auto !important;
+  }
+
+  .editor-mobile-dock {
+    box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.45);
+  }
+
+  /* Tighten Eigenpal formatting toolbar on phones */
+  .docx-shell[data-compact="true"] .docx-editor-toolbar,
+  .docx-shell[data-compact="true"] [class*="Toolbar"] {
+    padding-inline: 4px !important;
+    gap: 2px !important;
+  }
+
   .pdf-toolbar {
     -webkit-overflow-scrolling: touch;
   }

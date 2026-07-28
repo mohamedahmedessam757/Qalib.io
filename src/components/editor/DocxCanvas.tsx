@@ -16,9 +16,9 @@ import type { EditorView } from "prosemirror-view";
 import { startMenuClampWatcher } from "@/lib/clamp-floating-menus";
 import { printDocxAsPdf } from "@/lib/print-docx";
 
-const PAGE_PAD = 16;
-const MIN_ZOOM = 0.5;
-const MAX_ZOOM = 2;
+const PAGE_PAD = 8;
+const MIN_ZOOM = 0.35;
+const MAX_ZOOM = 2.5;
 
 export type DocxCanvasHandle = DocxEditorRef & {
   fitToWidth: () => void;
@@ -73,8 +73,10 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
       autoFitRef.current = true;
       const layout = editor.getEditorRef()?.getLayout();
       const pageW = layout?.pageSize?.w ?? 816;
-      const available = Math.max(shell.clientWidth - PAGE_PAD, 120);
-      editor.setZoom(clampZoom(available / pageW));
+      // Use the visible shell width; keep a tiny pad so the page isn't clipped
+      const available = Math.max(shell.clientWidth - PAGE_PAD, 100);
+      const next = clampZoom(available / pageW);
+      editor.setZoom(next);
       reportZoom();
     }, [reportZoom]);
 
@@ -82,10 +84,17 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
       const editor = editorRef.current;
       if (!editor) return 1;
       autoFitRef.current = false;
-      const next = clampZoom((editor.getZoom?.() ?? 1) + delta);
+      const current = editor.getZoom?.() ?? 1;
+      const next = clampZoom(Number((current + delta).toFixed(2)));
       editor.setZoom(next);
-      onZoomChangeRef.current?.(next);
-      return next;
+      // Some Eigenpal builds ignore setZoom silently — verify and retry once
+      const applied = editor.getZoom?.() ?? next;
+      if (Math.abs(applied - next) > 0.02) {
+        editor.setZoom(next);
+      }
+      const finalZ = editor.getZoom?.() ?? next;
+      onZoomChangeRef.current?.(finalZ);
+      return finalZ;
     }, []);
 
     const getZoomLevel = useCallback(() => {
@@ -174,7 +183,7 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
           showZoomControl={!compactChrome}
           showRuler={!compactChrome}
           showMarginGuides={false}
-          initialZoom={compactChrome ? 0.5 : 1}
+          initialZoom={compactChrome ? 0.45 : 1}
           onChange={() => onChange?.()}
           onSelectionChange={() => onSelectionChange?.()}
           onEditorViewReady={handleViewReady}

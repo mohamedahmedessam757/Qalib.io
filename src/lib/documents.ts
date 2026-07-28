@@ -79,6 +79,17 @@ export function isXlsxMime(mimeType: string | null | undefined) {
   );
 }
 
+/**
+ * Supabase Storage buckets often whitelist only pdf/docx.
+ * Keep the real mime in the DB; upload bytes with a bucket-safe type.
+ */
+export function storageUploadContentType(mimeType: string) {
+  if (mimeType === XLSX_MIME || mimeType === "application/vnd.ms-excel") {
+    return "application/octet-stream";
+  }
+  return mimeType;
+}
+
 export function editorPathForMime(id: string, mimeType?: string | null) {
   if (isPdfMime(mimeType)) return `/editor/pdf/${id}`;
   if (isXlsxMime(mimeType)) return `/editor/sheet/${id}`;

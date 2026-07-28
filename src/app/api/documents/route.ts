@@ -14,6 +14,7 @@ import {
   PDF_MIME,
   sanitizeTitle,
   STORAGE_BUCKET,
+  storageUploadContentType,
   XLSX_MIME,
 } from "@/lib/documents";
 import {
@@ -48,7 +49,7 @@ async function persistDocument(opts: {
   const { error: uploadError } = await supabase.storage
     .from(STORAGE_BUCKET)
     .upload(storagePath, buffer, {
-      contentType: mimeType,
+      contentType: storageUploadContentType(mimeType),
       upsert: false,
     });
 

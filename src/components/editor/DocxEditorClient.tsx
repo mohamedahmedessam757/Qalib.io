@@ -275,19 +275,63 @@ export function DocxEditorClient({
   }, [isMobile, openSelectionSheet, sheetOpen]);
 
   function onZoomOut() {
-    const z = editorRef.current?.adjustZoom?.(-0.1) ?? 1;
+    const editor = editorRef.current;
+    if (!editor?.adjustZoom) return;
+    const z = editor.adjustZoom(-0.15);
     setZoomPct(Math.round(z * 100));
   }
 
   function onZoomIn() {
-    const z = editorRef.current?.adjustZoom?.(0.1) ?? 1;
+    const editor = editorRef.current;
+    if (!editor?.adjustZoom) return;
+    const z = editor.adjustZoom(0.15);
     setZoomPct(Math.round(z * 100));
   }
 
   function onFit() {
     editorRef.current?.fitToWidth();
-    const z = editorRef.current?.getZoomLevel?.() ?? 1;
-    setZoomPct(Math.round(z * 100));
+    // read after layout settles
+    requestAnimationFrame(() => {
+      const z = editorRef.current?.getZoomLevel?.() ?? 1;
+      setZoomPct(Math.round(z * 100));
+    });
+  }
+
+  function onAddPage() {
+    const editor = editorRef.current;
+    if (!editor) {
+      toast.error(t("applyError"));
+      return;
+    }
+    const info = editor.getSelectionInfo?.();
+    let paraId = info?.paraId || null;
+    if (!paraId) {
+      const total = Math.max(1, editor.getTotalPages?.() || 1);
+      for (let page = total; page >= 1; page -= 1) {
+        const content = editor.getPageContent?.(page);
+        const paras = content?.paragraphs || [];
+        const last = paras[paras.length - 1];
+        if (last?.paraId) {
+          paraId = last.paraId;
+          break;
+        }
+      }
+    }
+    if (!paraId) {
+      toast.message(t("editSelectionHint"));
+      return;
+    }
+    const ok = editor.insertBreak({ paraId, type: "page" });
+    if (!ok) {
+      toast.error(t("applyError"));
+      return;
+    }
+    markDirty();
+    toast.success(t("pageAdd"));
+    window.setTimeout(() => {
+      const pages = editor.getTotalPages?.() || 1;
+      editor.scrollToPage?.(pages);
+    }, 120);
   }
 
   async function onDownload() {
@@ -381,175 +425,38 @@ export function DocxEditorClient({
 
   return (
     <div className="editor-mobile-shell flex h-[100dvh] flex-col bg-[#070b14] pt-[env(safe-area-inset-top)]">
-      <header className="relative z-40 shrink-0 print:hidden sm:px-4 sm:pt-3">
-        <div className="glass editor-chrome relative z-40 mx-auto flex h-12 max-w-[1600px] items-center justify-between gap-2 rounded-none px-2 sm:h-14 sm:rounded-2xl sm:px-3">
-          <div className="flex min-w-0 items-center gap-1.5 sm:gap-2">
+      {/* —— Mobile app chrome —— */}
+      <header className="relative z-40 shrink-0 print:hidden sm:hidden">
+        <div className="editor-chrome flex h-12 items-center justify-between gap-2 border-b border-line px-2">
+          <div className="flex min-w-0 flex-1 items-center gap-1">
             <Link href="/documents">
               <Button
                 variant="ghost"
                 size="sm"
-                className="min-h-11 min-w-11 gap-1.5 px-2 sm:min-h-0 sm:min-w-0"
+                className="min-h-11 min-w-11 px-2"
+                aria-label={t("back")}
               >
                 <ArrowRight className="h-4 w-4 rtl:rotate-180" />
-                <span className="hidden sm:inline">{t("back")}</span>
               </Button>
             </Link>
-            <p className="truncate text-sm font-medium sm:max-w-[40vw]">
-              {displayTitle}
-            </p>
-            {statusLabel ? (
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-white/5 px-2 py-1 text-[11px] text-muted sm:text-xs">
-                {(saveState === "saving" || pending) && (
-                  <LoaderCircle className="h-3 w-3 animate-spin text-accent" />
-                )}
-                {statusLabel}
-              </span>
-            ) : null}
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-medium">{displayTitle}</p>
+              {statusLabel ? (
+                <p className="truncate text-[10px] text-muted">{statusLabel}</p>
+              ) : null}
+            </div>
           </div>
-
-          <div className="relative flex items-center gap-1 sm:gap-2">
-            <div className="flex items-center gap-0.5 rounded-xl border border-line bg-white/[0.03] px-0.5">
-              <Button
-                size="sm"
-                variant="ghost"
-                className="min-h-11 min-w-10 px-1.5 sm:min-h-9 sm:min-w-8"
-                onClick={onZoomOut}
-                aria-label={t("zoomOut")}
-                title={t("zoomOut")}
-              >
-                <Minus className="h-4 w-4" />
-              </Button>
-              <span className="min-w-[2.75rem] text-center text-[11px] tabular-nums text-muted">
-                {zoomPct}%
-              </span>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="min-h-11 min-w-10 px-1.5 sm:min-h-9 sm:min-w-8"
-                onClick={onZoomIn}
-                aria-label={t("zoomIn")}
-                title={t("zoomIn")}
-              >
-                <Plus className="h-4 w-4" />
-              </Button>
-            </div>
+          <div className="flex shrink-0 items-center gap-0.5">
             <Button
               size="sm"
               variant="ghost"
-              className="min-h-11 min-w-11 gap-1.5 px-2 sm:min-h-0 sm:min-w-0"
-              onClick={onFit}
-              aria-label={t("fitWidth")}
-              title={t("fitWidth")}
-            >
-              <Scan className="h-4 w-4" />
-              <span className="hidden lg:inline">{t("fitWidth")}</span>
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="min-h-11 min-w-11 gap-1.5 px-2 sm:min-h-0 sm:min-w-0"
-              onClick={() => {
-                const editor = editorRef.current;
-                if (!editor) return;
-                const info = editor.getSelectionInfo?.();
-                const paraId =
-                  info?.paraId ||
-                  (() => {
-                    const content = editor.getPageContent?.(1);
-                    return content?.paragraphs?.[0]?.paraId;
-                  })();
-                if (!paraId) {
-                  toast.message(t("editSelectionHint"));
-                  return;
-                }
-                const ok = editor.insertBreak?.({ paraId, type: "page" });
-                if (ok === false) {
-                  toast.error(t("applyError"));
-                  return;
-                }
-                markDirty();
-                toast.success(t("pageAdd"));
-              }}
-              aria-label={t("pageAdd")}
-              title={t("pageAdd")}
-            >
-              <FilePlus2 className="h-4 w-4" />
-              <span className="hidden lg:inline">{t("pageAdd")}</span>
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="min-h-11 min-w-11 gap-1.5 px-2 sm:min-h-0 sm:min-w-0"
-              onClick={() => {
-                setJumpItems(collectParagraphs());
-                setJumpOpen(true);
-              }}
-              aria-label={t("paragraphs")}
-              title={t("paragraphs")}
-            >
-              <ListTree className="h-4 w-4" />
-            </Button>
-            <Button
-              size="sm"
-              variant={mobileHasSelection ? "solid" : "ghost"}
-              className={`min-h-11 min-w-11 gap-1.5 px-2 sm:min-h-0 sm:min-w-0 ${
-                mobileHasSelection ? "ring-1 ring-accent/50" : ""
-              }`}
-              onClick={() => {
-                setMenuOpen(false);
-                openSelectionSheet();
-              }}
-              aria-label={t("editSelection")}
-              title={t("editSelection")}
-            >
-              <Pencil className="h-4 w-4" />
-              <span className="hidden lg:inline">{t("editSelection")}</span>
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="min-h-11 min-w-11 gap-1.5 px-2 sm:min-h-0 sm:min-w-0"
-              onClick={() => {
-                setMenuOpen(false);
-                setAiOpen(true);
-              }}
+              className="min-h-11 min-w-11 px-2"
+              onClick={() => setAiOpen(true)}
               aria-label={t("aiAssistant")}
-              title={t("aiAssistant")}
             >
-              <Bot className="h-4 w-4 text-accent" />
-              <span className="hidden lg:inline">{t("aiAssistant")}</span>
+              <Bot className="h-5 w-5 text-accent" />
             </Button>
-
-            <div className="hidden items-center gap-1.5 sm:flex">
-              <Button
-                size="sm"
-                variant="ghost"
-                className="gap-1.5"
-                onClick={() =>
-                  startTransition(() => {
-                    void persist();
-                  })
-                }
-              >
-                <CloudUpload className="h-3.5 w-3.5" />
-                {tc("save")}
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="gap-1.5"
-                onClick={() => void onDownload()}
-              >
-                <Download className="h-3.5 w-3.5" />
-                {tc("download")}
-              </Button>
-              <Button size="sm" className="gap-1.5" onClick={onPdf}>
-                <FileDown className="h-3.5 w-3.5" />
-                {tc("exportPdf")}
-              </Button>
-            </div>
-
-            <div className="relative z-50 sm:hidden">
+            <div className="relative">
               <Button
                 size="sm"
                 variant="ghost"
@@ -561,7 +468,7 @@ export function DocxEditorClient({
                 <MoreVertical className="h-4 w-4" />
               </Button>
               {menuOpen ? (
-                <div className="editor-overflow-menu glass-strong absolute end-0 top-[calc(100%+6px)] z-50 min-w-[11rem] overflow-hidden rounded-xl py-1 shadow-[0_16px_40px_rgba(0,0,0,0.55)]">
+                <div className="editor-overflow-menu glass-strong absolute end-0 top-[calc(100%+6px)] z-50 min-w-[12rem] overflow-hidden rounded-xl py-1 shadow-[0_16px_40px_rgba(0,0,0,0.55)]">
                   <button
                     type="button"
                     className="flex w-full items-center gap-2 px-3 py-3 text-start text-sm hover:bg-white/8"
@@ -596,10 +503,12 @@ export function DocxEditorClient({
                     className="flex w-full items-center gap-2 px-3 py-3 text-start text-sm hover:bg-white/8"
                     onClick={() => {
                       setMenuOpen(false);
-                      openSelectionSheet();
+                      setJumpItems(collectParagraphs());
+                      setJumpOpen(true);
                     }}
                   >
-                    {t("editSelection")}
+                    <ListTree className="h-4 w-4" />
+                    {t("paragraphs")}
                   </button>
                 </div>
               ) : null}
@@ -608,7 +517,117 @@ export function DocxEditorClient({
         </div>
       </header>
 
-      <div className="relative z-0 min-h-0 flex-1 overflow-hidden sm:px-4 sm:pb-3 sm:pt-3">
+      {/* —— Desktop chrome —— */}
+      <header className="relative z-40 hidden shrink-0 print:hidden sm:block sm:px-4 sm:pt-3">
+        <div className="glass editor-chrome relative z-40 mx-auto flex h-14 max-w-[1600px] items-center justify-between gap-2 rounded-2xl px-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <Link href="/documents">
+              <Button variant="ghost" size="sm" className="gap-1.5">
+                <ArrowRight className="h-4 w-4 rtl:rotate-180" />
+                <span>{t("back")}</span>
+              </Button>
+            </Link>
+            <p className="truncate text-sm font-medium sm:max-w-[40vw]">
+              {displayTitle}
+            </p>
+            {statusLabel ? (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-white/5 px-2 py-1 text-xs text-muted">
+                {(saveState === "saving" || pending) && (
+                  <LoaderCircle className="h-3 w-3 animate-spin text-accent" />
+                )}
+                {statusLabel}
+              </span>
+            ) : null}
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-0.5 rounded-xl border border-line bg-white/[0.03] px-0.5">
+              <Button
+                size="sm"
+                variant="ghost"
+                className="min-h-9 min-w-8 px-1.5"
+                onClick={onZoomOut}
+                aria-label={t("zoomOut")}
+              >
+                <Minus className="h-4 w-4" />
+              </Button>
+              <span className="min-w-[2.75rem] text-center text-[11px] tabular-nums text-muted">
+                {zoomPct}%
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="min-h-9 min-w-8 px-1.5"
+                onClick={onZoomIn}
+                aria-label={t("zoomIn")}
+              >
+                <Plus className="h-4 w-4" />
+              </Button>
+            </div>
+            <Button size="sm" variant="ghost" onClick={onFit} title={t("fitWidth")}>
+              <Scan className="h-4 w-4" />
+            </Button>
+            <Button size="sm" variant="ghost" onClick={onAddPage} title={t("pageAdd")}>
+              <FilePlus2 className="h-4 w-4" />
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setJumpItems(collectParagraphs());
+                setJumpOpen(true);
+              }}
+              title={t("paragraphs")}
+            >
+              <ListTree className="h-4 w-4" />
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => openSelectionSheet()}
+              title={t("editSelection")}
+            >
+              <Pencil className="h-4 w-4" />
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setAiOpen(true)}
+              title={t("aiAssistant")}
+            >
+              <Bot className="h-4 w-4 text-accent" />
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="gap-1.5"
+              onClick={() =>
+                startTransition(() => {
+                  void persist();
+                })
+              }
+            >
+              <CloudUpload className="h-3.5 w-3.5" />
+              {tc("save")}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="gap-1.5"
+              onClick={() => void onDownload()}
+            >
+              <Download className="h-3.5 w-3.5" />
+              {tc("download")}
+            </Button>
+            <Button size="sm" className="gap-1.5" onClick={onPdf}>
+              <FileDown className="h-3.5 w-3.5" />
+              {tc("exportPdf")}
+            </Button>
+          </div>
+        </div>
+      </header>
+
+      <div className="relative z-0 min-h-0 flex-1 overflow-hidden pb-[calc(3.75rem+env(safe-area-inset-bottom))] sm:px-4 sm:pb-3 sm:pt-3">
         <div className="editor-canvas-frame glass h-full overflow-hidden rounded-none sm:rounded-[1.5rem]">
           {!buffer ? (
             <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-sm text-muted">
@@ -636,6 +655,60 @@ export function DocxEditorClient({
           )}
         </div>
       </div>
+
+      {/* Mobile bottom dock — like a native app */}
+      <nav
+        className="editor-mobile-dock fixed inset-x-0 bottom-0 z-40 border-t border-line bg-[#0c1422] pb-[env(safe-area-inset-bottom)] sm:hidden"
+        aria-label={t("moreActions")}
+      >
+        <div className="mx-auto flex h-[3.75rem] max-w-lg items-center justify-around px-1">
+          <button
+            type="button"
+            className="flex min-h-11 min-w-11 flex-col items-center justify-center gap-0.5 rounded-xl text-muted active:bg-white/8"
+            onClick={onZoomOut}
+            aria-label={t("zoomOut")}
+          >
+            <Minus className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            className="flex min-h-11 min-w-[3.25rem] flex-col items-center justify-center rounded-xl text-[11px] font-medium tabular-nums text-foreground active:bg-white/8"
+            onClick={onFit}
+            aria-label={t("fitWidth")}
+            title={t("fitWidth")}
+          >
+            {zoomPct}%
+          </button>
+          <button
+            type="button"
+            className="flex min-h-11 min-w-11 flex-col items-center justify-center gap-0.5 rounded-xl text-muted active:bg-white/8"
+            onClick={onZoomIn}
+            aria-label={t("zoomIn")}
+          >
+            <Plus className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            className="flex min-h-11 min-w-11 flex-col items-center justify-center gap-0.5 rounded-xl text-muted active:bg-white/8"
+            onClick={onAddPage}
+            aria-label={t("pageAdd")}
+          >
+            <FilePlus2 className="h-4 w-4" />
+            <span className="text-[9px]">{t("pageAddShort")}</span>
+          </button>
+          <button
+            type="button"
+            className={`flex min-h-11 min-w-11 flex-col items-center justify-center gap-0.5 rounded-xl active:bg-white/8 ${
+              mobileHasSelection ? "text-accent" : "text-muted"
+            }`}
+            onClick={() => openSelectionSheet()}
+            aria-label={t("editSelection")}
+          >
+            <Pencil className="h-4 w-4" />
+            <span className="text-[9px]">{t("editShort")}</span>
+          </button>
+        </div>
+      </nav>
 
       <SelectionEditSheet
         open={sheetOpen}

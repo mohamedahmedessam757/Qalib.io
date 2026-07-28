@@ -7,6 +7,7 @@ import {
   PDF_MIME,
   sanitizeTitle,
   STORAGE_BUCKET,
+  storageUploadContentType,
   XLSX_MIME,
 } from "@/lib/documents";
 import { getDocumentForOwner, requireUser } from "@/lib/db";
@@ -98,7 +99,7 @@ export async function PUT(request: Request, { params }: Params) {
   const { error: uploadError } = await supabase.storage
     .from(STORAGE_BUCKET)
     .upload(doc.storagePath, buffer, {
-      contentType: mimeType,
+      contentType: storageUploadContentType(mimeType),
       upsert: true,
     });
 

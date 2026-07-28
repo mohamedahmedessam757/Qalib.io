@@ -94,6 +94,8 @@
     "zoomIn": "تكبير",
     "zoomOut": "تصغير",
     "pageAdd": "إضافة صفحة",
+    "pageAddShort": "صفحة",
+    "editShort": "تعديل",
     "pageDelete": "حذف الصفحة",
     "pageDeleteConfirm": "حذف هذه الصفحة؟",
     "pageDeleteWarning": "سيُحذف محتوى الصفحة الحالية من ملف PDF بعد الحفظ. يصعب التراجع عن ذلك.",
