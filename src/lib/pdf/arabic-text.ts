@@ -26,7 +26,7 @@ function reverseChars(input: string): string {
   return Array.from(input).reverse().join("");
 }
 
-type Run = { kind: "ar" | "lat" | "neutral"; text: string };
+type Run = { kind: "ar" | "lat" | "gap"; text: string };
 
 function splitRuns(line: string): Run[] {
   const runs: Run[] = [];
@@ -37,26 +37,32 @@ function splitRuns(line: string): Run[] {
     if (!buf || !kind) return;
     runs.push({ kind, text: buf });
     buf = "";
+    kind = null;
   };
 
   for (const ch of line) {
-    const next: Run["kind"] = ARABIC_RE.test(ch)
-      ? "ar"
-      : LATIN_RE.test(ch)
-        ? "lat"
-        : "neutral";
+    if (/\s/.test(ch)) {
+      flush();
+      // Keep whitespace as its own run (never reshaped / reversed)
+      if (runs.length && runs[runs.length - 1].kind === "gap") {
+        runs[runs.length - 1].text += ch;
+      } else {
+        runs.push({ kind: "gap", text: ch });
+      }
+      continue;
+    }
+
+    const next: Run["kind"] = ARABIC_RE.test(ch) ? "ar" : LATIN_RE.test(ch) ? "lat" : "ar";
 
     if (kind === null) {
-      kind = next === "neutral" ? "ar" : next;
+      kind = next;
       buf = ch;
       continue;
     }
-
-    if (next === "neutral" || next === kind) {
+    if (next === kind) {
       buf += ch;
       continue;
     }
-
     flush();
     kind = next;
     buf = ch;
@@ -82,12 +88,8 @@ export function preparePdfTextLine(line: string): {
   }
 
   const rendered = runs.map((run) => {
-    if (run.kind === "lat") return run.text;
-    // Arabic + neutrals attached to Arabic runs
-    if (run.kind === "ar" || hasArabic(run.text)) {
-      return reverseChars(reshapeArabic(run.text));
-    }
-    return run.text;
+    if (run.kind === "gap" || run.kind === "lat") return run.text;
+    return reverseChars(reshapeArabic(run.text));
   });
 
   // RTL paragraph: reverse run order for LTR painter
