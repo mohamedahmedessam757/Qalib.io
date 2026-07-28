@@ -57,6 +57,7 @@ import {
   type TextOverlay,
 } from "@/lib/pdf/export-overlays";
 import { hasArabic, organizePdfText } from "@/lib/pdf/arabic-text";
+import { findLegacyBlankTitleBox } from "@/lib/pdf/strip-legacy-title";
 import type { PdfEditorHandle } from "@/lib/ai/apply-pdf-tools";
 import { PdfToolbar, type PdfTool } from "./PdfToolbar";
 
@@ -190,11 +191,37 @@ export function PdfEditorClient({
         if (!fileRes.ok) throw new Error("fetch failed");
         const ab = await fileRes.arrayBuffer();
         if (cancelled) return;
-        setBufferSafe(ab);
+
+        let working = ab;
+        let stripped = false;
+        // Cover the old non-deletable "مستند PDF جديد" baked into early blanks.
+        try {
+          const box = await findLegacyBlankTitleBox(working);
+          if (box && !cancelled) {
+            const covered = await exportPdfWithOverlays(working, [
+              {
+                id: createId("wo"),
+                type: "whiteout",
+                pageIndex: 0,
+                x: Math.max(0, box.x - 0.01),
+                y: Math.max(0, box.y - 0.005),
+                w: Math.min(0.95, Math.max(box.w + 0.02, 0.25)),
+                h: Math.min(0.12, Math.max(box.h + 0.01, 0.04)),
+              },
+            ]);
+            working = Uint8Array.from(covered).buffer as ArrayBuffer;
+            stripped = true;
+          }
+        } catch {
+          /* keep original */
+        }
+
+        if (cancelled) return;
+        setBufferSafe(working);
         setLoadProgress(80);
         try {
           const { PDFDocument } = await import("pdf-lib");
-          const pdf = await PDFDocument.load(ab.slice(0));
+          const pdf = await PDFDocument.load(working.slice(0));
           if (!cancelled) {
             const count = pdf.getPageCount();
             pageCountRef.current = count;
@@ -204,6 +231,17 @@ export function PdfEditorClient({
           if (!cancelled) {
             pageCountRef.current = 1;
             setPageCount(1);
+          }
+        }
+        if (stripped && !cancelled) {
+          try {
+            await fetch(`/api/documents/${documentId}`, {
+              method: "PUT",
+              headers: { "Content-Type": PDF_MIME },
+              body: new Blob([new Uint8Array(working)], { type: PDF_MIME }),
+            });
+          } catch {
+            /* will retry on next save */
           }
         }
         if (!cancelled) setLoadProgress(100);

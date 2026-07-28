@@ -183,13 +183,14 @@ export async function exportPdfWithOverlays(
           let tx = x + 2;
           if (align === "end") tx = x + w - 2 - textWidth;
           else if (align === "center") tx = x + (w - textWidth) / 2;
+          // Never pass maxWidth for Arabic — pdf-lib wraps per glyph and breaks shaping.
           page.drawText(drawn, {
             x: Math.max(x + 1, tx),
             y: y + h - size - i * (size + 2),
             size,
             font,
             color: rgb(r, g, b),
-            maxWidth: w - 4,
+            ...(prepared.rtl ? {} : { maxWidth: w - 4 }),
           });
         } catch {
           /* skip undrawable glyphs */
@@ -237,13 +238,21 @@ export async function exportPdfWithOverlays(
             const font = needsRichFont(text) ? richFont : helvetica;
             try {
               const prepared = preparePdfTextLine(text.slice(0, 40));
+              let tw = 0;
+              try {
+                tw = font.widthOfTextAtSize(prepared.text, 9);
+              } catch {
+                tw = Math.min(cellW - 6, prepared.text.length * 5);
+              }
+              const tx = prepared.rtl
+                ? cx + cellW - 3 - tw
+                : cx + 3;
               page.drawText(prepared.text, {
-                x: prepared.rtl ? cx + 3 : cx + 3,
+                x: Math.max(cx + 1, tx),
                 y: cy + cellH / 2 - 4,
                 size: 9,
                 font,
                 color: rgb(0.1, 0.1, 0.12),
-                maxWidth: cellW - 6,
               });
             } catch {
               /* skip */
