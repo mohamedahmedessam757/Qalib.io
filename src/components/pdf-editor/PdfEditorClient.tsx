@@ -518,8 +518,8 @@ export function PdfEditorClient({
 
   function organizeSelectedText() {
     if (!selectedId) return;
-    setOverlays((prev) =>
-      prev.map((o) => {
+    pushHistory(
+      overlays.map((o) => {
         if (o.id !== selectedId || o.type !== "text") return o;
         const text = organizePdfText(o.text);
         const rtl = hasArabic(text);

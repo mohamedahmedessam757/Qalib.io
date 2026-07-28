@@ -285,12 +285,26 @@ export function PdfCanvas({
                 >
                   {overlay.type === "text" ? (
                     <div
-                      className="h-full w-full overflow-hidden px-1 text-left leading-tight"
+                      className="h-full w-full overflow-hidden px-1 leading-tight"
                       style={{
                         color: overlay.color,
                         fontSize: `${Math.max(10, overlay.fontSize * 0.85)}px`,
+                        textAlign:
+                          overlay.align === "center"
+                            ? "center"
+                            : overlay.align === "end"
+                              ? "right"
+                              : "left",
+                        fontFamily:
+                          "'Noto Sans Arabic', 'Segoe UI', Tahoma, sans-serif",
                       }}
-                      dir="auto"
+                      dir={
+                        overlay.dir === "rtl"
+                          ? "rtl"
+                          : overlay.dir === "ltr"
+                            ? "ltr"
+                            : "auto"
+                      }
                     >
                       {overlay.text}
                     </div>
