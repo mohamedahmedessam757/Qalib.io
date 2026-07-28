@@ -296,7 +296,7 @@ export function PdfCanvas({
                               ? "right"
                               : "left",
                         fontFamily:
-                          "'Noto Sans Arabic', 'Segoe UI', Tahoma, sans-serif",
+                          '"NotoSansArabic", "IBM Plex Sans Arabic", "Segoe UI", Tahoma, sans-serif',
                       }}
                       dir={
                         overlay.dir === "rtl"

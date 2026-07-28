@@ -1,6 +1,7 @@
 import fontkit from "@pdf-lib/fontkit";
 import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
 import { hasArabic, preparePdfTextLine } from "./arabic-text";
+import { ensureNotoArabicFont, rasterizePdfTextBlock } from "./arabic-canvas";
 
 export type PdfOverlayBase = {
   id: string;
@@ -167,10 +168,42 @@ export async function exportPdfWithOverlays(
       const { r, g, b } = hexToRgb(overlay.color || "#111827");
       const size = Math.max(8, Math.min(overlay.fontSize, 72));
       const useArabic = hasArabic(overlay.text);
+      const align = overlay.align || (useArabic ? "end" : "start");
+
+      // Arabic: paint via browser HarfBuzz → PNG. Glyph drawText cannot join letters.
+      if (useArabic && typeof document !== "undefined") {
+        try {
+          await ensureNotoArabicFont();
+          const raster = await rasterizePdfTextBlock({
+            text: overlay.text,
+            fontSize: size,
+            color: overlay.color || "#111827",
+            boxWidth: w,
+            align,
+            rtl: overlay.dir !== "ltr",
+          });
+          if (raster) {
+            const img = await pdf.embedPng(raster.bytes);
+            const drawW = w;
+            const drawH = Math.min(h, (raster.height / raster.width) * drawW);
+            // Top-align inside the overlay box (PDF y is bottom-left).
+            page.drawImage(img, {
+              x,
+              y: y + h - drawH,
+              width: drawW,
+              height: drawH,
+            });
+            continue;
+          }
+        } catch {
+          /* fall through to glyph path */
+        }
+      }
+
       const font = useArabic ? richFont : helvetica;
       const lines = overlay.text.split("\n");
-      const align = overlay.align || (useArabic ? "end" : "start");
-      lines.forEach((line, i) => {
+      for (let i = 0; i < lines.length; i += 1) {
+        const line = lines[i];
         try {
           const prepared = preparePdfTextLine(line || " ");
           const drawn = prepared.text || " ";
@@ -183,7 +216,6 @@ export async function exportPdfWithOverlays(
           let tx = x + 2;
           if (align === "end") tx = x + w - 2 - textWidth;
           else if (align === "center") tx = x + (w - textWidth) / 2;
-          // Never pass maxWidth for Arabic — pdf-lib wraps per glyph and breaks shaping.
           page.drawText(drawn, {
             x: Math.max(x + 1, tx),
             y: y + h - size - i * (size + 2),
@@ -195,7 +227,7 @@ export async function exportPdfWithOverlays(
         } catch {
           /* skip undrawable glyphs */
         }
-      });
+      }
     }
 
     if (overlay.type === "image") {
@@ -237,6 +269,30 @@ export async function exportPdfWithOverlays(
           if (text) {
             const font = needsRichFont(text) ? richFont : helvetica;
             try {
+              if (needsRichFont(text) && typeof document !== "undefined") {
+                const raster = await rasterizePdfTextBlock({
+                  text: text.slice(0, 80),
+                  fontSize: 9,
+                  color: "#111827",
+                  boxWidth: cellW - 4,
+                  align: "end",
+                  rtl: true,
+                });
+                if (raster) {
+                  const img = await pdf.embedPng(raster.bytes);
+                  const drawH = Math.min(
+                    cellH - 2,
+                    (raster.height / raster.width) * (cellW - 4),
+                  );
+                  page.drawImage(img, {
+                    x: cx + 2,
+                    y: cy + (cellH - drawH) / 2,
+                    width: cellW - 4,
+                    height: drawH,
+                  });
+                  continue;
+                }
+              }
               const prepared = preparePdfTextLine(text.slice(0, 40));
               let tw = 0;
               try {
@@ -244,9 +300,7 @@ export async function exportPdfWithOverlays(
               } catch {
                 tw = Math.min(cellW - 6, prepared.text.length * 5);
               }
-              const tx = prepared.rtl
-                ? cx + cellW - 3 - tw
-                : cx + 3;
+              const tx = prepared.rtl ? cx + cellW - 3 - tw : cx + 3;
               page.drawText(prepared.text, {
                 x: Math.max(cx + 1, tx),
                 y: cy + cellH / 2 - 4,

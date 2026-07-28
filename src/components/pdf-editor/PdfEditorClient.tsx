@@ -57,6 +57,7 @@ import {
   type TextOverlay,
 } from "@/lib/pdf/export-overlays";
 import { hasArabic, organizePdfText } from "@/lib/pdf/arabic-text";
+import { ensureNotoArabicFont } from "@/lib/pdf/arabic-canvas";
 import { findLegacyBlankTitleBox } from "@/lib/pdf/strip-legacy-title";
 import type { PdfEditorHandle } from "@/lib/ai/apply-pdf-tools";
 import { PdfToolbar, type PdfTool } from "./PdfToolbar";
@@ -160,6 +161,10 @@ export function PdfEditorClient({
   const setBufferSafe = useCallback((next: ArrayBuffer | null) => {
     bufferRef.current = next;
     setBuffer(next);
+  }, []);
+
+  useEffect(() => {
+    void ensureNotoArabicFont();
   }, []);
 
   useEffect(() => {
@@ -1063,7 +1068,7 @@ export function PdfEditorClient({
                     dir={selected.dir || (selectedTextRtl ? "rtl" : "ltr")}
                     style={{
                       fontFamily: selectedTextRtl
-                        ? '"Noto Sans Arabic", "IBM Plex Sans Arabic", sans-serif'
+                        ? '"NotoSansArabic", "IBM Plex Sans Arabic", "Segoe UI", Tahoma, sans-serif'
                         : undefined,
                       textAlign:
                         selected.align === "center"

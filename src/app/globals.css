@@ -1,5 +1,13 @@
 @import "tailwindcss";
 
+@font-face {
+  font-family: "NotoSansArabic";
+  src: url("/fonts/NotoSansArabic-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   --bg: #070b14;
   --bg-elevated: rgba(255, 255, 255, 0.04);
