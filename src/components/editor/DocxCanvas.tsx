@@ -21,6 +21,7 @@ import {
   downloadPdfBlob,
   exportDocxPagesToPdfBlob,
 } from "@/lib/export-docx-pdf";
+import { isAppleTouchDevice } from "@/lib/device";
 import { printDocxAsPdf } from "@/lib/print-docx";
 
 const PAGE_PAD = 8;
@@ -159,8 +160,10 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
       try {
         return await exportDocxPagesToPdfBlob(opts);
       } catch (err) {
-        // Rare fallback: browser print (may include Chrome headers/footers)
-        await printDocxAsPdf(opts);
+        // Never print on iOS — Safari print chrome injects URL/time/page numbers.
+        if (!isAppleTouchDevice()) {
+          await printDocxAsPdf(opts);
+        }
         throw err;
       } finally {
         viewScaleRef.current = prevScale;
@@ -173,7 +176,7 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
 
     const exportAndDownload = useCallback(async () => {
       const blob = await printDocument();
-      downloadPdfBlob(blob, "document");
+      await downloadPdfBlob(blob, "document");
     }, [printDocument]);
 
     useImperativeHandle(

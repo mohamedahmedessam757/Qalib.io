@@ -401,9 +401,12 @@ export function DocxEditorClient({
       if (!blob) throw new Error("export failed");
       const base =
         fileName.replace(/\.docx$/i, "") || displayTitle || "document";
-      downloadPdfBlob(blob, base);
+      await downloadPdfBlob(blob, base);
       toast.success(t("downloadReady"));
-    } catch {
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        return;
+      }
       toast.error(t("pdfExportError"));
     }
   }

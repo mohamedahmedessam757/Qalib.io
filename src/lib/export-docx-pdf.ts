@@ -4,8 +4,10 @@
 
 import { toPng } from "html-to-image";
 import { PDFDocument } from "pdf-lib";
+import { isAppleTouchDevice } from "@/lib/device";
 
-const CAPTURE_PIXEL_RATIO = 2;
+const MIN_PNG_DATA_URL_LENGTH = 8000;
+const CAPTURE_ATTEMPTS = 3;
 
 export type ExportDocxPdfOptions = {
   root: ParentNode;
@@ -84,6 +86,58 @@ function dataUrlToBytes(dataUrl: string): Uint8Array {
   return out;
 }
 
+function isValidPngDataUrl(dataUrl: string): boolean {
+  return (
+    typeof dataUrl === "string" &&
+    dataUrl.startsWith("data:image/png") &&
+    dataUrl.length >= MIN_PNG_DATA_URL_LENGTH
+  );
+}
+
+function captureOptions(pixelRatio: number) {
+  return {
+    pixelRatio,
+    cacheBust: true,
+    backgroundColor: "#ffffff",
+    style: {
+      boxShadow: "none",
+      margin: "0",
+    },
+  };
+}
+
+/**
+ * Safari often returns a blank PNG on the first foreignObject capture.
+ * Warm once, then capture for real; retry if still empty.
+ */
+async function capturePagePng(pageEl: HTMLElement): Promise<string> {
+  const pixelRatio = isAppleTouchDevice() ? 1 : 2;
+  const opts = captureOptions(pixelRatio);
+
+  // Warm Safari SVG/foreignObject image cache (discarded).
+  try {
+    await toPng(pageEl, opts);
+  } catch {
+    /* first pass may throw; second pass can still succeed */
+  }
+
+  let lastError: unknown;
+  for (let attempt = 0; attempt < CAPTURE_ATTEMPTS; attempt += 1) {
+    try {
+      const dataUrl = await toPng(pageEl, opts);
+      if (isValidPngDataUrl(dataUrl)) return dataUrl;
+      lastError = new Error("Blank or too-small page capture");
+    } catch (err) {
+      lastError = err;
+    }
+    await new Promise<void>((r) => setTimeout(r, 100));
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Failed to capture document page");
+}
+
 /**
  * Capture each .layout-page as PNG and assemble a PDF via pdf-lib.
  * Does not call window.print().
@@ -107,21 +161,10 @@ export async function exportDocxPagesToPdfBlob(
 
     for (const pageEl of pages) {
       // CSS box size → PDF page size (points ≈ CSS px for screen-fidelity export).
-      // Do NOT use raw PNG pixel dims — pixelRatio would inflate the page ~2×.
       const cssW = Math.max(1, pageEl.offsetWidth);
       const cssH = Math.max(1, pageEl.offsetHeight);
 
-      const dataUrl = await toPng(pageEl, {
-        pixelRatio: CAPTURE_PIXEL_RATIO,
-        cacheBust: true,
-        backgroundColor: "#ffffff",
-        // Soft page chrome in the editor should not appear in the PDF
-        style: {
-          boxShadow: "none",
-          margin: "0",
-        },
-      });
-
+      const dataUrl = await capturePagePng(pageEl);
       const pngBytes = dataUrlToBytes(dataUrl);
       const img = await pdf.embedPng(pngBytes);
       const page = pdf.addPage([cssW, cssH]);
@@ -142,19 +185,72 @@ export async function exportDocxPagesToPdfBlob(
   }
 }
 
-/** Trigger a browser download for a PDF blob with a sanitized filename. */
-export function downloadPdfBlob(blob: Blob, title: string) {
+function sanitizePdfBaseName(title: string): string {
   const base = title.replace(/\.pdf$/i, "").trim() || "document";
-  const safe =
-    base.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim() || "document";
+  return base.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim() || "document";
+}
+
+function openBlobInNewTab(blob: Blob) {
+  const url = URL.createObjectURL(blob);
+  const opened = window.open(url, "_blank", "noopener,noreferrer");
+  if (!opened) {
+    const a = document.createElement("a");
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.click();
+  }
+  // Keep the blob URL alive so iOS Safari can render/save the PDF.
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+function downloadViaAnchor(blob: Blob, fileName: string) {
   const url = URL.createObjectURL(blob);
   try {
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${safe}.pdf`;
+    a.download = fileName;
     a.rel = "noopener";
     a.click();
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+/**
+ * Deliver a PDF blob: Web Share on iOS when possible, else open/download.
+ * Never calls window.print().
+ */
+export async function downloadPdfBlob(
+  blob: Blob,
+  title: string,
+): Promise<void> {
+  const safe = sanitizePdfBaseName(title);
+  const fileName = `${safe}.pdf`;
+  const appleTouch = isAppleTouchDevice();
+
+  if (appleTouch && typeof navigator.share === "function") {
+    const file = new File([blob], fileName, { type: "application/pdf" });
+    const data: ShareData = { files: [file], title: fileName };
+    const canShare =
+      typeof navigator.canShare !== "function" || navigator.canShare(data);
+    if (canShare) {
+      try {
+        await navigator.share(data);
+        return;
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          throw err;
+        }
+        // Fall through to open in a tab.
+      }
+    }
+  }
+
+  if (appleTouch) {
+    openBlobInNewTab(blob);
+    return;
+  }
+
+  downloadViaAnchor(blob, fileName);
 }

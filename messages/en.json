@@ -88,7 +88,7 @@
     "loadingDoc": "Opening document…",
     "saveError": "Could not save",
     "downloadReady": "Download started",
-    "pdfHint": "Downloads a PDF file directly — no browser print dialog.",
+    "pdfHint": "Creates a clean PDF. On iPhone, Share or a new tab may open so you can save — no browser print chrome.",
     "pdfExportError": "Could not export PDF",
     "largeFile": "Large file; the browser may slow down.",
     "fitWidth": "Fit width",
