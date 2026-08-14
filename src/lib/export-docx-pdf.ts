@@ -223,11 +223,21 @@ export async function sharePdfFile(
   fileName: string,
 ): Promise<"shared" | "aborted" | "failed"> {
   if (typeof navigator.share !== "function") return "failed";
-  const file = new File([blob], fileName, {
-    type: "application/pdf",
-    lastModified: Date.now(),
-  });
-  const data: ShareData = { files: [file], title: fileName };
+
+  // Materialize bytes — Safari can mishandle lazy Blobs from canvas/pdf pipelines.
+  let file: File;
+  try {
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    file = new File([bytes], fileName, {
+      type: "application/pdf",
+      lastModified: Date.now(),
+    });
+  } catch {
+    return "failed";
+  }
+
+  // iOS rejects combining `url` with `files`; keep payload to files only.
+  const data: ShareData = { files: [file] };
   if (typeof navigator.canShare === "function" && !navigator.canShare(data)) {
     return "failed";
   }
@@ -242,7 +252,7 @@ export async function sharePdfFile(
 
 /**
  * Deliver a real PDF blob.
- * iOS: Share sheet only (no new tab, no window.print).
+ * iOS: never auto-share after long generation — return needs-share for a fresh tap.
  * Desktop: anchor download.
  */
 export async function downloadPdfBlob(
@@ -252,10 +262,7 @@ export async function downloadPdfBlob(
   const fileName = `${sanitizePdfBaseName(title)}.pdf`;
 
   if (isAppleTouchDevice()) {
-    const result = await sharePdfFile(blob, fileName);
-    if (result === "shared") return { ok: true, mode: "share" };
-    if (result === "aborted") return { ok: false, mode: "aborted" };
-    // Gesture expired or share unavailable — caller must show in-page Save tap.
+    // Best practice: prepare first, Share only from the next user tap.
     return { ok: false, mode: "needs-share", blob, fileName };
   }
 

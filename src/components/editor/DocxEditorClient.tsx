@@ -399,6 +399,7 @@ export function DocxEditorClient({
 
   async function onConfirmPdfShare() {
     if (!pendingPdfShare) return;
+    // First await in this click turn must lead to navigator.share.
     const shareResult = await sharePdfFile(
       pendingPdfShare.blob,
       pendingPdfShare.fileName,
@@ -430,13 +431,12 @@ export function DocxEditorClient({
         toast.error(t("pdfExportError"));
         return;
       }
-      // iOS: share needs a fresh tap after long capture (keeps gesture token).
+      // Prepare-then-Save: show in-page tap (no auto-share after long capture).
       setPendingPdfShare({ blob: result.blob, fileName: result.fileName });
       toast.message(t("pdfShareHint"), {
         action: {
           label: t("pdfShareAction"),
           onClick: () => {
-            // Sonner closes the toast; share must start in this click turn.
             void sharePdfFile(result.blob, result.fileName).then((shareResult) => {
               if (shareResult === "shared") {
                 setPendingPdfShare(null);
