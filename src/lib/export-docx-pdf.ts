@@ -190,17 +190,26 @@ function sanitizePdfBaseName(title: string): string {
   return base.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim() || "document";
 }
 
-function openBlobInNewTab(blob: Blob) {
+function isAbortError(err: unknown): boolean {
+  return (
+    (err instanceof DOMException || err instanceof Error) &&
+    err.name === "AbortError"
+  );
+}
+
+function openBlobForIos(blob: Blob, fileName: string) {
   const url = URL.createObjectURL(blob);
-  const opened = window.open(url, "_blank", "noopener,noreferrer");
-  if (!opened) {
-    const a = document.createElement("a");
-    a.href = url;
-    a.target = "_blank";
-    a.rel = "noopener noreferrer";
-    a.click();
-  }
-  // Keep the blob URL alive so iOS Safari can render/save the PDF.
+  // Prefer <a> — window.open(..., "noopener") returns null and is often blocked
+  // after the long async capture loses the user-gesture token.
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Keep the blob URL alive so Safari can render/save the PDF.
   window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
@@ -211,7 +220,9 @@ function downloadViaAnchor(blob: Blob, fileName: string) {
     a.href = url;
     a.download = fileName;
     a.rel = "noopener";
+    document.body.appendChild(a);
     a.click();
+    a.remove();
   } finally {
     URL.revokeObjectURL(url);
   }
@@ -239,16 +250,14 @@ export async function downloadPdfBlob(
         await navigator.share(data);
         return;
       } catch (err) {
-        if (err instanceof DOMException && err.name === "AbortError") {
-          throw err;
-        }
-        // Fall through to open in a tab.
+        if (isAbortError(err)) throw err;
+        // Fall through (e.g. NotAllowedError after async gesture expiry).
       }
     }
   }
 
   if (appleTouch) {
-    openBlobInNewTab(blob);
+    openBlobForIos(blob, fileName);
     return;
   }
 

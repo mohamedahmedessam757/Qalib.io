@@ -404,7 +404,10 @@ export function DocxEditorClient({
       await downloadPdfBlob(blob, base);
       toast.success(t("downloadReady"));
     } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") {
+      if (
+        (err instanceof DOMException || err instanceof Error) &&
+        err.name === "AbortError"
+      ) {
         return;
       }
       toast.error(t("pdfExportError"));

@@ -175,8 +175,18 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
     }, [reportZoom]);
 
     const exportAndDownload = useCallback(async () => {
-      const blob = await printDocument();
-      await downloadPdfBlob(blob, "document");
+      try {
+        const blob = await printDocument();
+        await downloadPdfBlob(blob, "document");
+      } catch (err) {
+        // Abort = user cancelled share. Other errors: no toast here (Eigenpal Print).
+        if (
+          (err instanceof DOMException || err instanceof Error) &&
+          err.name === "AbortError"
+        ) {
+          return;
+        }
+      }
     }, [printDocument]);
 
     useImperativeHandle(
