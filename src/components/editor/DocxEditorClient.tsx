@@ -397,6 +397,20 @@ export function DocxEditorClient({
     toast.success(t("downloadReady"));
   }
 
+  async function onConfirmPdfShare() {
+    if (!pendingPdfShare) return;
+    const shareResult = await sharePdfFile(
+      pendingPdfShare.blob,
+      pendingPdfShare.fileName,
+    );
+    if (shareResult === "shared") {
+      setPendingPdfShare(null);
+      toast.success(t("downloadReady"));
+    } else if (shareResult === "failed") {
+      toast.error(t("pdfExportError"));
+    }
+  }
+
   async function onPdf() {
     setMenuOpen(false);
     setPendingPdfShare(null);
@@ -412,43 +426,30 @@ export function DocxEditorClient({
         return;
       }
       if (result.mode === "aborted") return;
-      // iOS: share needs a fresh tap after long capture
+      if (typeof navigator.share !== "function") {
+        toast.error(t("pdfExportError"));
+        return;
+      }
+      // iOS: share needs a fresh tap after long capture (keeps gesture token).
       setPendingPdfShare({ blob: result.blob, fileName: result.fileName });
       toast.message(t("pdfShareHint"), {
         action: {
           label: t("pdfShareAction"),
           onClick: () => {
-            void (async () => {
-              const shareResult = await sharePdfFile(
-                result.blob,
-                result.fileName,
-              );
+            // Sonner closes the toast; share must start in this click turn.
+            void sharePdfFile(result.blob, result.fileName).then((shareResult) => {
               if (shareResult === "shared") {
                 setPendingPdfShare(null);
                 toast.success(t("downloadReady"));
               } else if (shareResult === "failed") {
                 toast.error(t("pdfExportError"));
               }
-            })();
+            });
           },
         },
-        duration: 12_000,
+        duration: 20_000,
       });
     } catch {
-      toast.error(t("pdfExportError"));
-    }
-  }
-
-  async function onConfirmPdfShare() {
-    if (!pendingPdfShare) return;
-    const shareResult = await sharePdfFile(
-      pendingPdfShare.blob,
-      pendingPdfShare.fileName,
-    );
-    if (shareResult === "shared") {
-      setPendingPdfShare(null);
-      toast.success(t("downloadReady"));
-    } else if (shareResult === "failed") {
       toast.error(t("pdfExportError"));
     }
   }
@@ -769,7 +770,11 @@ export function DocxEditorClient({
         </div>
       </header>
 
-      <div className="relative z-0 min-h-0 flex-1 overflow-hidden pb-[calc(3.75rem+env(safe-area-inset-bottom))] sm:px-4 sm:pb-3 sm:pt-3">
+      <div className={`relative z-0 min-h-0 flex-1 overflow-hidden sm:px-4 sm:pb-3 sm:pt-3 ${
+        pendingPdfShare
+          ? "pb-[calc(7.5rem+env(safe-area-inset-bottom))]"
+          : "pb-[calc(3.75rem+env(safe-area-inset-bottom))]"
+      }`}>
         <div className="editor-canvas-frame glass h-full overflow-hidden rounded-none sm:rounded-[1.5rem]">
           {!buffer ? (
             <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-sm text-muted">
@@ -804,11 +809,12 @@ export function DocxEditorClient({
 
       {/* Mobile bottom dock — like a native app */}
       {pendingPdfShare ? (
-        <div className="fixed inset-x-0 bottom-[calc(3.75rem+env(safe-area-inset-bottom))] z-40 border-t border-line bg-[#121a2a] px-3 py-2 sm:hidden">
+        <div className="fixed inset-x-0 bottom-[calc(3.75rem+env(safe-area-inset-bottom))] z-50 border-t border-line bg-[#121a2a] px-3 py-2 sm:bottom-3 sm:start-1/2 sm:end-auto sm:w-[min(24rem,calc(100%-1.5rem))] sm:-translate-x-1/2 sm:rounded-xl sm:border sm:shadow-[0_12px_40px_rgba(0,0,0,0.45)]">
           <p className="mb-2 text-center text-[11px] text-muted">
             {t("pdfShareHint")}
           </p>
           <Button
+            type="button"
             size="sm"
             className="w-full gap-1.5"
             onClick={() => void onConfirmPdfShare()}

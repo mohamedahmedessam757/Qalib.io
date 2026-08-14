@@ -223,7 +223,10 @@ export async function sharePdfFile(
   fileName: string,
 ): Promise<"shared" | "aborted" | "failed"> {
   if (typeof navigator.share !== "function") return "failed";
-  const file = new File([blob], fileName, { type: "application/pdf" });
+  const file = new File([blob], fileName, {
+    type: "application/pdf",
+    lastModified: Date.now(),
+  });
   const data: ShareData = { files: [file], title: fileName };
   if (typeof navigator.canShare === "function" && !navigator.canShare(data)) {
     return "failed";
