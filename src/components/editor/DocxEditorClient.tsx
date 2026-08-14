@@ -30,6 +30,7 @@ import {
 import { Link } from "@/i18n/navigation";
 import { Button } from "@/components/ui/Button";
 import { DOCX_MIME } from "@/lib/documents";
+import { downloadPdfBlob } from "@/lib/export-docx-pdf";
 import {
   getCachedDocumentMeta,
   setCachedDocumentMeta,
@@ -394,17 +395,13 @@ export function DocxEditorClient({
 
   async function onPdf() {
     setMenuOpen(false);
+    toast.message(t("pdfHint"));
     try {
       const blob = await editorRef.current?.printDocument?.();
       if (!blob) throw new Error("export failed");
-      const base = fileName.replace(/\.docx$/i, "") || displayTitle || "document";
-      const safe = base.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim() || "document";
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${safe}.pdf`;
-      a.click();
-      URL.revokeObjectURL(url);
+      const base =
+        fileName.replace(/\.docx$/i, "") || displayTitle || "document";
+      downloadPdfBlob(blob, base);
       toast.success(t("downloadReady"));
     } catch {
       toast.error(t("pdfExportError"));

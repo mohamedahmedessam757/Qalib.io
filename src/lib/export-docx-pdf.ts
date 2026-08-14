@@ -5,6 +5,8 @@
 import { toPng } from "html-to-image";
 import { PDFDocument } from "pdf-lib";
 
+const CAPTURE_PIXEL_RATIO = 2;
+
 export type ExportDocxPdfOptions = {
   root: ParentNode;
   title: string;
@@ -61,10 +63,7 @@ function findPagesRoot(root: ParentNode): HTMLElement | null {
 }
 
 function collectPageElements(root: ParentNode): HTMLElement[] {
-  const pagesEl =
-    findPagesRoot(root) ||
-    findPagesRoot(document) ||
-    null;
+  const pagesEl = findPagesRoot(root) || findPagesRoot(document) || null;
 
   const list = pagesEl
     ? pagesEl.querySelectorAll<HTMLElement>(".layout-page")
@@ -73,6 +72,16 @@ function collectPageElements(root: ParentNode): HTMLElement[] {
       : document.querySelectorAll<HTMLElement>(".layout-page");
 
   return Array.from(list);
+}
+
+/** Decode a data: URL to bytes without fetch (works offline / CSP-safe). */
+function dataUrlToBytes(dataUrl: string): Uint8Array {
+  const comma = dataUrl.indexOf(",");
+  const b64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
+  return out;
 }
 
 /**
@@ -97,19 +106,30 @@ export async function exportDocxPagesToPdfBlob(
     const pdf = await PDFDocument.create();
 
     for (const pageEl of pages) {
+      // CSS box size → PDF page size (points ≈ CSS px for screen-fidelity export).
+      // Do NOT use raw PNG pixel dims — pixelRatio would inflate the page ~2×.
+      const cssW = Math.max(1, pageEl.offsetWidth);
+      const cssH = Math.max(1, pageEl.offsetHeight);
+
       const dataUrl = await toPng(pageEl, {
-        pixelRatio: 2,
+        pixelRatio: CAPTURE_PIXEL_RATIO,
         cacheBust: true,
         backgroundColor: "#ffffff",
+        // Soft page chrome in the editor should not appear in the PDF
+        style: {
+          boxShadow: "none",
+          margin: "0",
+        },
       });
-      const pngBytes = await fetch(dataUrl).then((r) => r.arrayBuffer());
+
+      const pngBytes = dataUrlToBytes(dataUrl);
       const img = await pdf.embedPng(pngBytes);
-      const page = pdf.addPage([img.width, img.height]);
+      const page = pdf.addPage([cssW, cssH]);
       page.drawImage(img, {
         x: 0,
         y: 0,
-        width: img.width,
-        height: img.height,
+        width: cssW,
+        height: cssH,
       });
     }
 
@@ -119,5 +139,22 @@ export async function exportDocxPagesToPdfBlob(
     if (typeof prevZoom === "number") {
       opts.setZoom?.(prevZoom);
     }
+  }
+}
+
+/** Trigger a browser download for a PDF blob with a sanitized filename. */
+export function downloadPdfBlob(blob: Blob, title: string) {
+  const base = title.replace(/\.pdf$/i, "").trim() || "document";
+  const safe =
+    base.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim() || "document";
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${safe}.pdf`;
+    a.rel = "noopener";
+    a.click();
+  } finally {
+    URL.revokeObjectURL(url);
   }
 }

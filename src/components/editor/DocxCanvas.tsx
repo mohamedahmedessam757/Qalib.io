@@ -14,9 +14,13 @@ import {
   useState,
   type CSSProperties,
 } from "react";
+import { flushSync } from "react-dom";
 import type { EditorView } from "prosemirror-view";
 import { startMenuClampWatcher } from "@/lib/clamp-floating-menus";
-import { exportDocxPagesToPdfBlob } from "@/lib/export-docx-pdf";
+import {
+  downloadPdfBlob,
+  exportDocxPagesToPdfBlob,
+} from "@/lib/export-docx-pdf";
 import { printDocxAsPdf } from "@/lib/print-docx";
 
 const PAGE_PAD = 8;
@@ -137,8 +141,13 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
       const shell = shellRef.current;
       if (!shell) throw new Error("Editor shell not ready");
       const prevScale = viewScaleRef.current;
+      // Must paint CSS zoom:1 before html-to-image (mobile uses style.zoom).
       viewScaleRef.current = 1;
-      setViewScale(1);
+      flushSync(() => {
+        setViewScale(1);
+      });
+      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+
       const opts = {
         root: shell,
         title: "Qalib document",
@@ -155,10 +164,17 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
         throw err;
       } finally {
         viewScaleRef.current = prevScale;
-        setViewScale(prevScale);
+        flushSync(() => {
+          setViewScale(prevScale);
+        });
         reportZoom();
       }
     }, [reportZoom]);
+
+    const exportAndDownload = useCallback(async () => {
+      const blob = await printDocument();
+      downloadPdfBlob(blob, "document");
+    }, [printDocument]);
 
     useImperativeHandle(
       ref,
@@ -171,7 +187,7 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
             if (prop === "getZoomLevel") return getZoomLevel;
             if (prop === "print")
               return () => {
-                void printDocument();
+                void exportAndDownload();
               };
             const editor = editorRef.current;
             if (!editor) return undefined;
@@ -179,7 +195,7 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
             return typeof value === "function" ? value.bind(editor) : value;
           },
         }),
-      [fitToWidth, printDocument, adjustZoom, getZoomLevel],
+      [fitToWidth, printDocument, exportAndDownload, adjustZoom, getZoomLevel],
     );
 
     useEffect(() => {
@@ -246,7 +262,7 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
           onSelectionChange={() => onSelectionChange?.()}
           onEditorViewReady={handleViewReady}
           onPrint={() => {
-            void printDocument();
+            void exportAndDownload();
           }}
           onFontsLoaded={() => {
             // Never re-fit on mobile after fonts — that freezes mid-scroll.
