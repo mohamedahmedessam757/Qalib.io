@@ -30,7 +30,7 @@ import {
 import { Link } from "@/i18n/navigation";
 import { Button } from "@/components/ui/Button";
 import { DOCX_MIME } from "@/lib/documents";
-import { downloadPdfBlob } from "@/lib/export-docx-pdf";
+import { downloadPdfBlob, sharePdfFile } from "@/lib/export-docx-pdf";
 import {
   getCachedDocumentMeta,
   setCachedDocumentMeta,
@@ -122,6 +122,10 @@ export function DocxEditorClient({
   const [aiOpen, setAiOpen] = useState(false);
   const [zoomPct, setZoomPct] = useState(100);
   const [mobileHasSelection, setMobileHasSelection] = useState(false);
+  const [pendingPdfShare, setPendingPdfShare] = useState<{
+    blob: Blob;
+    fileName: string;
+  } | null>(null);
   const dirtyRef = useRef(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -395,21 +399,56 @@ export function DocxEditorClient({
 
   async function onPdf() {
     setMenuOpen(false);
+    setPendingPdfShare(null);
     toast.message(t("pdfHint"));
     try {
       const blob = await editorRef.current?.printDocument?.();
       if (!blob) throw new Error("export failed");
       const base =
         fileName.replace(/\.docx$/i, "") || displayTitle || "document";
-      await downloadPdfBlob(blob, base);
-      toast.success(t("downloadReady"));
-    } catch (err) {
-      if (
-        (err instanceof DOMException || err instanceof Error) &&
-        err.name === "AbortError"
-      ) {
+      const result = await downloadPdfBlob(blob, base);
+      if (result.ok) {
+        toast.success(t("downloadReady"));
         return;
       }
+      if (result.mode === "aborted") return;
+      // iOS: share needs a fresh tap after long capture
+      setPendingPdfShare({ blob: result.blob, fileName: result.fileName });
+      toast.message(t("pdfShareHint"), {
+        action: {
+          label: t("pdfShareAction"),
+          onClick: () => {
+            void (async () => {
+              const shareResult = await sharePdfFile(
+                result.blob,
+                result.fileName,
+              );
+              if (shareResult === "shared") {
+                setPendingPdfShare(null);
+                toast.success(t("downloadReady"));
+              } else if (shareResult === "failed") {
+                toast.error(t("pdfExportError"));
+              }
+            })();
+          },
+        },
+        duration: 12_000,
+      });
+    } catch {
+      toast.error(t("pdfExportError"));
+    }
+  }
+
+  async function onConfirmPdfShare() {
+    if (!pendingPdfShare) return;
+    const shareResult = await sharePdfFile(
+      pendingPdfShare.blob,
+      pendingPdfShare.fileName,
+    );
+    if (shareResult === "shared") {
+      setPendingPdfShare(null);
+      toast.success(t("downloadReady"));
+    } else if (shareResult === "failed") {
       toast.error(t("pdfExportError"));
     }
   }
@@ -764,6 +803,21 @@ export function DocxEditorClient({
       </div>
 
       {/* Mobile bottom dock — like a native app */}
+      {pendingPdfShare ? (
+        <div className="fixed inset-x-0 bottom-[calc(3.75rem+env(safe-area-inset-bottom))] z-40 border-t border-line bg-[#121a2a] px-3 py-2 sm:hidden">
+          <p className="mb-2 text-center text-[11px] text-muted">
+            {t("pdfShareHint")}
+          </p>
+          <Button
+            size="sm"
+            className="w-full gap-1.5"
+            onClick={() => void onConfirmPdfShare()}
+          >
+            <FileDown className="h-3.5 w-3.5" />
+            {t("pdfShareAction")}
+          </Button>
+        </div>
+      ) : null}
       <nav
         className="editor-mobile-dock fixed inset-x-0 bottom-0 z-40 border-t border-line bg-[#0c1422] pb-[env(safe-area-inset-bottom)] sm:hidden"
         aria-label={t("moreActions")}

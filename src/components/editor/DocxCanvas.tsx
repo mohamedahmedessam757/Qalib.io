@@ -177,15 +177,11 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
     const exportAndDownload = useCallback(async () => {
       try {
         const blob = await printDocument();
-        await downloadPdfBlob(blob, "document");
-      } catch (err) {
-        // Abort = user cancelled share. Other errors: no toast here (Eigenpal Print).
-        if (
-          (err instanceof DOMException || err instanceof Error) &&
-          err.name === "AbortError"
-        ) {
-          return;
-        }
+        const result = await downloadPdfBlob(blob, "document");
+        // needs-share: user should use Export PDF in the app chrome (i18n + Save tap).
+        void result;
+      } catch {
+        /* ignore — Eigenpal Print has no toast surface here */
       }
     }, [printDocument]);
 

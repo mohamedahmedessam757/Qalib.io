@@ -197,22 +197,6 @@ function isAbortError(err: unknown): boolean {
   );
 }
 
-function openBlobForIos(blob: Blob, fileName: string) {
-  const url = URL.createObjectURL(blob);
-  // Prefer <a> — window.open(..., "noopener") returns null and is often blocked
-  // after the long async capture loses the user-gesture token.
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = fileName;
-  a.target = "_blank";
-  a.rel = "noopener noreferrer";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  // Keep the blob URL alive so Safari can render/save the PDF.
-  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-}
-
 function downloadViaAnchor(blob: Blob, fileName: string) {
   const url = URL.createObjectURL(blob);
   try {
@@ -228,38 +212,50 @@ function downloadViaAnchor(blob: Blob, fileName: string) {
   }
 }
 
+export type PdfDeliveryResult =
+  | { ok: true; mode: "share" | "download" }
+  | { ok: false; mode: "needs-share"; blob: Blob; fileName: string }
+  | { ok: false; mode: "aborted" };
+
+/** Share a PDF File from a user gesture (same-page Share sheet). */
+export async function sharePdfFile(
+  blob: Blob,
+  fileName: string,
+): Promise<"shared" | "aborted" | "failed"> {
+  if (typeof navigator.share !== "function") return "failed";
+  const file = new File([blob], fileName, { type: "application/pdf" });
+  const data: ShareData = { files: [file], title: fileName };
+  if (typeof navigator.canShare === "function" && !navigator.canShare(data)) {
+    return "failed";
+  }
+  try {
+    await navigator.share(data);
+    return "shared";
+  } catch (err) {
+    if (isAbortError(err)) return "aborted";
+    return "failed";
+  }
+}
+
 /**
- * Deliver a PDF blob: Web Share on iOS when possible, else open/download.
- * Never calls window.print().
+ * Deliver a real PDF blob.
+ * iOS: Share sheet only (no new tab, no window.print).
+ * Desktop: anchor download.
  */
 export async function downloadPdfBlob(
   blob: Blob,
   title: string,
-): Promise<void> {
-  const safe = sanitizePdfBaseName(title);
-  const fileName = `${safe}.pdf`;
-  const appleTouch = isAppleTouchDevice();
+): Promise<PdfDeliveryResult> {
+  const fileName = `${sanitizePdfBaseName(title)}.pdf`;
 
-  if (appleTouch && typeof navigator.share === "function") {
-    const file = new File([blob], fileName, { type: "application/pdf" });
-    const data: ShareData = { files: [file], title: fileName };
-    const canShare =
-      typeof navigator.canShare !== "function" || navigator.canShare(data);
-    if (canShare) {
-      try {
-        await navigator.share(data);
-        return;
-      } catch (err) {
-        if (isAbortError(err)) throw err;
-        // Fall through (e.g. NotAllowedError after async gesture expiry).
-      }
-    }
-  }
-
-  if (appleTouch) {
-    openBlobForIos(blob, fileName);
-    return;
+  if (isAppleTouchDevice()) {
+    const result = await sharePdfFile(blob, fileName);
+    if (result === "shared") return { ok: true, mode: "share" };
+    if (result === "aborted") return { ok: false, mode: "aborted" };
+    // Gesture expired or share unavailable — caller must show in-page Save tap.
+    return { ok: false, mode: "needs-share", blob, fileName };
   }
 
   downloadViaAnchor(blob, fileName);
+  return { ok: true, mode: "download" };
 }
