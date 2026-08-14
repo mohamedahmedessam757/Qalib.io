@@ -24,6 +24,7 @@
     "docx": "^9.7.1",
     "exceljs": "^4.4.0",
     "heic2any": "^0.0.4",
+    "html-to-image": "^1.11.13",
     "lucide-react": "^1.27.0",
     "motion": "^12.42.2",
     "next": "16.2.12",

@@ -16,6 +16,7 @@ import {
 } from "react";
 import type { EditorView } from "prosemirror-view";
 import { startMenuClampWatcher } from "@/lib/clamp-floating-menus";
+import { exportDocxPagesToPdfBlob } from "@/lib/export-docx-pdf";
 import { printDocxAsPdf } from "@/lib/print-docx";
 
 const PAGE_PAD = 8;
@@ -24,7 +25,7 @@ const MAX_ZOOM = 2.5;
 
 export type DocxCanvasHandle = DocxEditorRef & {
   fitToWidth: () => void;
-  printDocument: () => Promise<void>;
+  printDocument: () => Promise<Blob>;
   adjustZoom: (delta: number) => number;
   getZoomLevel: () => number;
 };
@@ -131,24 +132,32 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
       return baseZoomRef.current * viewScaleRef.current;
     }, []);
 
-    const printDocument = useCallback(async () => {
+    const printDocument = useCallback(async (): Promise<Blob> => {
       const editor = editorRef.current;
       const shell = shellRef.current;
-      if (!shell) return;
+      if (!shell) throw new Error("Editor shell not ready");
       const prevScale = viewScaleRef.current;
       viewScaleRef.current = 1;
       setViewScale(1);
-      await printDocxAsPdf({
+      const opts = {
         root: shell,
         title: "Qalib document",
         totalPages: editor?.getTotalPages?.() || 1,
-        scrollToPage: (page) => editor?.scrollToPage?.(page),
-        setZoom: (z) => editor?.setZoom?.(z),
+        scrollToPage: (page: number) => editor?.scrollToPage?.(page),
+        setZoom: (z: number) => editor?.setZoom?.(z),
         getZoom: () => editor?.getZoom?.() ?? 1,
-      });
-      viewScaleRef.current = prevScale;
-      setViewScale(prevScale);
-      reportZoom();
+      };
+      try {
+        return await exportDocxPagesToPdfBlob(opts);
+      } catch (err) {
+        // Rare fallback: browser print (may include Chrome headers/footers)
+        await printDocxAsPdf(opts);
+        throw err;
+      } finally {
+        viewScaleRef.current = prevScale;
+        setViewScale(prevScale);
+        reportZoom();
+      }
     }, [reportZoom]);
 
     useImperativeHandle(
