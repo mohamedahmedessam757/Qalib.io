@@ -217,23 +217,42 @@ export type PdfDeliveryResult =
   | { ok: false; mode: "needs-share"; blob: Blob; fileName: string }
   | { ok: false; mode: "aborted" };
 
-/** Share a PDF File from a user gesture (same-page Share sheet). */
-export async function sharePdfFile(
+/** Build a concrete PDF File (call during prepare, not inside the Share tap). */
+export async function materializePdfFile(
   blob: Blob,
   fileName: string,
+): Promise<File> {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  return new File([bytes], fileName, {
+    type: "application/pdf",
+    lastModified: Date.now(),
+  });
+}
+
+/**
+ * Share a ready PDF File from a user gesture.
+ * Must be invoked directly from a click — avoid awaits before this call.
+ */
+export async function sharePdfFile(
+  fileOrBlob: File | Blob,
+  fileName?: string,
 ): Promise<"shared" | "aborted" | "failed"> {
   if (typeof navigator.share !== "function") return "failed";
 
-  // Materialize bytes — Safari can mishandle lazy Blobs from canvas/pdf pipelines.
   let file: File;
-  try {
-    const bytes = new Uint8Array(await blob.arrayBuffer());
-    file = new File([bytes], fileName, {
-      type: "application/pdf",
-      lastModified: Date.now(),
-    });
-  } catch {
-    return "failed";
+  if (fileOrBlob instanceof File && fileOrBlob.type === "application/pdf") {
+    file = fileOrBlob;
+  } else {
+    // Fallback path (should be rare) — may lose gesture on older iOS.
+    try {
+      file = await materializePdfFile(
+        fileOrBlob,
+        fileName ||
+          (fileOrBlob instanceof File ? fileOrBlob.name : "document.pdf"),
+      );
+    } catch {
+      return "failed";
+    }
   }
 
   // iOS rejects combining `url` with `files`; keep payload to files only.

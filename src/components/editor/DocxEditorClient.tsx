@@ -30,7 +30,11 @@ import {
 import { Link } from "@/i18n/navigation";
 import { Button } from "@/components/ui/Button";
 import { DOCX_MIME } from "@/lib/documents";
-import { downloadPdfBlob, sharePdfFile } from "@/lib/export-docx-pdf";
+import {
+  downloadPdfBlob,
+  materializePdfFile,
+  sharePdfFile,
+} from "@/lib/export-docx-pdf";
 import {
   getCachedDocumentMeta,
   setCachedDocumentMeta,
@@ -123,7 +127,7 @@ export function DocxEditorClient({
   const [zoomPct, setZoomPct] = useState(100);
   const [mobileHasSelection, setMobileHasSelection] = useState(false);
   const [pendingPdfShare, setPendingPdfShare] = useState<{
-    blob: Blob;
+    file: File;
     fileName: string;
   } | null>(null);
   const dirtyRef = useRef(false);
@@ -399,11 +403,8 @@ export function DocxEditorClient({
 
   async function onConfirmPdfShare() {
     if (!pendingPdfShare) return;
-    // First await in this click turn must lead to navigator.share.
-    const shareResult = await sharePdfFile(
-      pendingPdfShare.blob,
-      pendingPdfShare.fileName,
-    );
+    // File is already materialized — first await is navigator.share.
+    const shareResult = await sharePdfFile(pendingPdfShare.file);
     if (shareResult === "shared") {
       setPendingPdfShare(null);
       toast.success(t("downloadReady"));
@@ -431,13 +432,14 @@ export function DocxEditorClient({
         toast.error(t("pdfExportError"));
         return;
       }
-      // Prepare-then-Save: show in-page tap (no auto-share after long capture).
-      setPendingPdfShare({ blob: result.blob, fileName: result.fileName });
+      // Prepare File during export so the Save tap can share immediately.
+      const readyFile = await materializePdfFile(result.blob, result.fileName);
+      setPendingPdfShare({ file: readyFile, fileName: result.fileName });
       toast.message(t("pdfShareHint"), {
         action: {
           label: t("pdfShareAction"),
           onClick: () => {
-            void sharePdfFile(result.blob, result.fileName).then((shareResult) => {
+            void sharePdfFile(readyFile).then((shareResult) => {
               if (shareResult === "shared") {
                 setPendingPdfShare(null);
                 toast.success(t("downloadReady"));
