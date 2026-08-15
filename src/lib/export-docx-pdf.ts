@@ -16,6 +16,7 @@ export type ExportDocxPdfOptions = {
   scrollToPage?: (page: number) => void;
   setZoom?: (z: number) => void;
   getZoom?: () => number;
+  onProgress?: (current: number, total: number) => void;
 };
 
 async function revealAllPages(
@@ -108,17 +109,19 @@ function captureOptions(pixelRatio: number) {
 
 /**
  * Safari often returns a blank PNG on the first foreignObject capture.
- * Warm once, then capture for real; retry if still empty.
+ * Warm once on Apple touch only, then capture for real; retry if still empty.
  */
 async function capturePagePng(pageEl: HTMLElement): Promise<string> {
   const pixelRatio = isAppleTouchDevice() ? 1 : 2;
   const opts = captureOptions(pixelRatio);
 
-  // Warm Safari SVG/foreignObject image cache (discarded).
-  try {
-    await toPng(pageEl, opts);
-  } catch {
-    /* first pass may throw; second pass can still succeed */
+  if (isAppleTouchDevice()) {
+    // Warm Safari SVG/foreignObject image cache (discarded).
+    try {
+      await toPng(pageEl, opts);
+    } catch {
+      /* first pass may throw; second pass can still succeed */
+    }
   }
 
   let lastError: unknown;
@@ -159,7 +162,10 @@ export async function exportDocxPagesToPdfBlob(
 
     const pdf = await PDFDocument.create();
 
-    for (const pageEl of pages) {
+    for (let i = 0; i < pages.length; i += 1) {
+      const pageEl = pages[i]!;
+      opts.onProgress?.(i + 1, pages.length);
+
       // CSS box size → PDF page size (points ≈ CSS px for screen-fidelity export).
       const cssW = Math.max(1, pageEl.offsetWidth);
       const cssH = Math.max(1, pageEl.offsetHeight);
@@ -190,6 +196,8 @@ function sanitizePdfBaseName(title: string): string {
   return base.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim() || "document";
 }
 
+export { sanitizePdfBaseName };
+
 function isAbortError(err: unknown): boolean {
   return (
     (err instanceof DOMException || err instanceof Error) &&
@@ -199,17 +207,15 @@ function isAbortError(err: unknown): boolean {
 
 function downloadViaAnchor(blob: Blob, fileName: string) {
   const url = URL.createObjectURL(blob);
-  try {
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = fileName;
-    a.rel = "noopener";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  } finally {
-    URL.revokeObjectURL(url);
-  }
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Delayed revoke — immediate revoke can kill the download on some browsers.
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 export type PdfDeliveryResult =
@@ -222,8 +228,10 @@ export async function materializePdfFile(
   blob: Blob,
   fileName: string,
 ): Promise<File> {
-  const bytes = new Uint8Array(await blob.arrayBuffer());
-  return new File([bytes], fileName, {
+  if (blob instanceof File && blob.type === "application/pdf" && blob.name) {
+    return blob;
+  }
+  return new File([blob], fileName, {
     type: "application/pdf",
     lastModified: Date.now(),
   });
@@ -257,8 +265,13 @@ export async function sharePdfFile(
 
   // iOS rejects combining `url` with `files`; keep payload to files only.
   const data: ShareData = { files: [file] };
-  if (typeof navigator.canShare === "function" && !navigator.canShare(data)) {
-    return "failed";
+  // canShare false-negatives are common on WebKit — still attempt share().
+  if (typeof navigator.canShare === "function") {
+    try {
+      void navigator.canShare(data);
+    } catch {
+      /* ignore — still try share */
+    }
   }
   try {
     await navigator.share(data);
@@ -266,6 +279,39 @@ export async function sharePdfFile(
   } catch (err) {
     if (isAbortError(err)) return "aborted";
     return "failed";
+  }
+}
+
+export function createPdfObjectUrl(fileOrBlob: File | Blob): string {
+  return URL.createObjectURL(fileOrBlob);
+}
+
+/** Must be called directly from a click handler. No await before this. */
+export function openPdfFallbackFromGesture(
+  fileOrBlob: File | Blob,
+  fileName: string,
+): void {
+  const url = URL.createObjectURL(fileOrBlob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  a.target = "_blank";
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+export async function writePdfToFileHandle(
+  handle: FileSystemFileHandle,
+  blob: Blob,
+): Promise<void> {
+  const writable = await handle.createWritable();
+  try {
+    await writable.write(blob);
+  } finally {
+    await writable.close();
   }
 }
 

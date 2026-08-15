@@ -31,10 +31,15 @@ import { Link } from "@/i18n/navigation";
 import { Button } from "@/components/ui/Button";
 import { DOCX_MIME } from "@/lib/documents";
 import {
+  createPdfObjectUrl,
   downloadPdfBlob,
   materializePdfFile,
+  openPdfFallbackFromGesture,
+  sanitizePdfBaseName,
   sharePdfFile,
+  writePdfToFileHandle,
 } from "@/lib/export-docx-pdf";
+import { hasSaveFilePicker, isAppleTouchDevice } from "@/lib/device";
 import {
   getCachedDocumentMeta,
   setCachedDocumentMeta,
@@ -54,6 +59,10 @@ import {
   ParagraphJumpSheet,
   type ParagraphJumpItem,
 } from "./ParagraphJumpSheet";
+import {
+  ExportPdfDialog,
+  type ExportPdfFormValues,
+} from "./ExportPdfDialog";
 import type { DocxCanvasHandle } from "./DocxCanvas";
 
 function EditorChunkLoading() {
@@ -126,13 +135,17 @@ export function DocxEditorClient({
   const [aiOpen, setAiOpen] = useState(false);
   const [zoomPct, setZoomPct] = useState(100);
   const [mobileHasSelection, setMobileHasSelection] = useState(false);
-  const [pendingPdfShare, setPendingPdfShare] = useState<{
-    file: File;
-    fileName: string;
-  } | null>(null);
+  const [pdfExportOpen, setPdfExportOpen] = useState(false);
+  const [pdfExportPhase, setPdfExportPhase] = useState<
+    "form" | "generating" | "ready"
+  >("form");
+  const [pdfProgress, setPdfProgress] = useState({ current: 0, total: 0 });
+  const [pdfReadyFile, setPdfReadyFile] = useState<File | null>(null);
+  const [pdfReadyUrl, setPdfReadyUrl] = useState<string | null>(null);
   const dirtyRef = useRef(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pdfExportBusyRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -401,58 +414,81 @@ export function DocxEditorClient({
     toast.success(t("downloadReady"));
   }
 
-  async function onConfirmPdfShare() {
-    if (!pendingPdfShare) return;
-    // File is already materialized — first await is navigator.share.
-    const shareResult = await sharePdfFile(pendingPdfShare.file);
-    if (shareResult === "shared") {
-      setPendingPdfShare(null);
-      toast.success(t("downloadReady"));
-    } else if (shareResult === "failed") {
-      toast.error(t("pdfExportError"));
+  function closeExportDialog() {
+    if (pdfReadyUrl) {
+      URL.revokeObjectURL(pdfReadyUrl);
     }
+    setPdfReadyUrl(null);
+    setPdfReadyFile(null);
+    setPdfExportPhase("form");
+    setPdfProgress({ current: 0, total: 0 });
+    setPdfExportOpen(false);
+    pdfExportBusyRef.current = false;
   }
 
-  async function onPdf() {
+  function onSavePdf() {
+    if (!pdfReadyFile) return;
+    void sharePdfFile(pdfReadyFile).then((shareResult) => {
+      if (shareResult === "shared") {
+        toast.success(t("downloadReady"));
+        closeExportDialog();
+      } else if (shareResult === "failed") {
+        openPdfFallbackFromGesture(pdfReadyFile, pdfReadyFile.name);
+      }
+      // aborted: leave dialog open
+    });
+  }
+
+  function onPdf() {
     setMenuOpen(false);
-    setPendingPdfShare(null);
-    toast.message(t("pdfHint"));
+    if (pdfExportBusyRef.current) return;
+    setPdfExportPhase("form");
+    setPdfProgress({ current: 0, total: 0 });
+    setPdfExportOpen(true);
+  }
+
+  async function onExportPdfFormSubmit(values: ExportPdfFormValues) {
+    if (pdfExportBusyRef.current) return;
+    pdfExportBusyRef.current = true;
+    setPdfExportPhase("generating");
+    setPdfProgress({ current: 0, total: 0 });
+
+    const base = sanitizePdfBaseName(values.title);
     try {
-      const blob = await editorRef.current?.printDocument?.();
+      const blob = await editorRef.current?.printDocument?.({
+        onProgress: (current, total) => {
+          setPdfProgress({ current, total });
+        },
+      });
       if (!blob) throw new Error("export failed");
-      const base =
-        fileName.replace(/\.docx$/i, "") || displayTitle || "document";
+
+      if (values.fileHandle) {
+        await writePdfToFileHandle(values.fileHandle, blob);
+        toast.success(t("downloadReady"));
+        closeExportDialog();
+        return;
+      }
+
       const result = await downloadPdfBlob(blob, base);
       if (result.ok) {
         toast.success(t("downloadReady"));
+        closeExportDialog();
         return;
       }
-      if (result.mode === "aborted") return;
-      if (typeof navigator.share !== "function") {
-        toast.error(t("pdfExportError"));
+      if (result.mode === "aborted") {
+        closeExportDialog();
         return;
       }
-      // Prepare File during export so the Save tap can share immediately.
+
       const readyFile = await materializePdfFile(result.blob, result.fileName);
-      setPendingPdfShare({ file: readyFile, fileName: result.fileName });
-      toast.message(t("pdfShareHint"), {
-        action: {
-          label: t("pdfShareAction"),
-          onClick: () => {
-            void sharePdfFile(readyFile).then((shareResult) => {
-              if (shareResult === "shared") {
-                setPendingPdfShare(null);
-                toast.success(t("downloadReady"));
-              } else if (shareResult === "failed") {
-                toast.error(t("pdfExportError"));
-              }
-            });
-          },
-        },
-        duration: 20_000,
-      });
+      const url = createPdfObjectUrl(readyFile);
+      setPdfReadyFile(readyFile);
+      setPdfReadyUrl(url);
+      setPdfExportPhase("ready");
+      pdfExportBusyRef.current = false;
     } catch {
       toast.error(t("pdfExportError"));
+      closeExportDialog();
     }
   }
 
@@ -772,11 +808,7 @@ export function DocxEditorClient({
         </div>
       </header>
 
-      <div className={`relative z-0 min-h-0 flex-1 overflow-hidden sm:px-4 sm:pb-3 sm:pt-3 ${
-        pendingPdfShare
-          ? "pb-[calc(7.5rem+env(safe-area-inset-bottom))]"
-          : "pb-[calc(3.75rem+env(safe-area-inset-bottom))]"
-      }`}>
+      <div className="relative z-0 min-h-0 flex-1 overflow-hidden pb-[calc(3.75rem+env(safe-area-inset-bottom))] sm:px-4 sm:pb-3 sm:pt-3">
         <div className="editor-canvas-frame glass h-full overflow-hidden rounded-none sm:rounded-[1.5rem]">
           {!buffer ? (
             <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-sm text-muted">
@@ -797,6 +829,7 @@ export function DocxEditorClient({
               onChange={markDirty}
               onSelectionChange={onSelectionChange}
               onZoomChange={(z) => setZoomPct(Math.round(z * 100))}
+              onRequestPdfExport={onPdf}
               onReady={() => {
                 // DocxCanvas already fits once on view-ready; only sync % label.
                 window.setTimeout(() => {
@@ -810,22 +843,6 @@ export function DocxEditorClient({
       </div>
 
       {/* Mobile bottom dock — like a native app */}
-      {pendingPdfShare ? (
-        <div className="fixed inset-x-0 bottom-[calc(3.75rem+env(safe-area-inset-bottom))] z-50 border-t border-line bg-[#121a2a] px-3 py-2 sm:bottom-3 sm:start-1/2 sm:end-auto sm:w-[min(24rem,calc(100%-1.5rem))] sm:-translate-x-1/2 sm:rounded-xl sm:border sm:shadow-[0_12px_40px_rgba(0,0,0,0.45)]">
-          <p className="mb-2 text-center text-[11px] text-muted">
-            {t("pdfShareHint")}
-          </p>
-          <Button
-            type="button"
-            size="sm"
-            className="w-full gap-1.5"
-            onClick={() => void onConfirmPdfShare()}
-          >
-            <FileDown className="h-3.5 w-3.5" />
-            {t("pdfShareAction")}
-          </Button>
-        </div>
-      ) : null}
       <nav
         className="editor-mobile-dock fixed inset-x-0 bottom-0 z-40 border-t border-line bg-[#0c1422] pb-[env(safe-area-inset-bottom)] sm:hidden"
         aria-label={t("moreActions")}
@@ -926,6 +943,45 @@ export function DocxEditorClient({
           setDisplayTitle(next);
           setFileName(`${next}.docx`);
         }}
+      />
+
+      <ExportPdfDialog
+        open={pdfExportOpen}
+        initialName={
+          fileName.replace(/\.docx$/i, "") || displayTitle || "document"
+        }
+        phase={pdfExportPhase}
+        progressCurrent={pdfProgress.current}
+        progressTotal={pdfProgress.total}
+        isApple={isAppleTouchDevice()}
+        canPickPath={hasSaveFilePicker()}
+        readyFile={pdfReadyFile}
+        readyUrl={pdfReadyUrl}
+        submitting={pdfExportPhase === "generating"}
+        labels={{
+          title: t("exportPdfFormTitle"),
+          nameLabel: t("exportPdfNameLabel"),
+          namePlaceholder: t("exportPdfNamePlaceholder"),
+          pathLabel: t("exportPdfPathLabel"),
+          pathPlaceholder: t("exportPdfPathPlaceholder"),
+          pathHintDesktop: t("exportPdfPathHintDesktop"),
+          pathHintIos: t("exportPdfPathHintIos"),
+          pickPath: t("exportPdfPickPath"),
+          submit: t("exportPdfSubmit"),
+          cancel: t("exportPdfCancel"),
+          nameRequired: t("exportPdfNameRequired"),
+          preparing: t("exportPdfPreparing"),
+          progress: t("exportPdfProgress"),
+          readyTitle: t("exportPdfReadyTitle"),
+          save: t("exportPdfSave"),
+          openFallback: t("exportPdfOpenFallback"),
+          fallbackHint: t("exportPdfFallbackHint"),
+        }}
+        onClose={closeExportDialog}
+        onSubmitForm={(values) => {
+          void onExportPdfFormSubmit(values);
+        }}
+        onSavePdf={onSavePdf}
       />
     </div>
   );
