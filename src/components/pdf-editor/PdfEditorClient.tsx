@@ -713,6 +713,35 @@ export function PdfEditorClient({
     window.setTimeout(closeExportDialog, 1200);
   }
 
+  async function onSaveToPath() {
+    if (!pdfReadyFile) return;
+    const picker = (
+      window as Window & {
+        showSaveFilePicker?: (options?: {
+          suggestedName?: string;
+          types?: {
+            description: string;
+            accept: Record<string, string[]>;
+          }[];
+        }) => Promise<FileSystemFileHandle>;
+      }
+    ).showSaveFilePicker;
+    if (typeof picker !== "function") return;
+    try {
+      const handle = await picker({
+        suggestedName: pdfReadyFile.name,
+        types: [
+          { description: "PDF", accept: { "application/pdf": [".pdf"] } },
+        ],
+      });
+      await writePdfToFileHandle(handle, pdfReadyFile);
+      toast.success(t("downloadReady"));
+      closeExportDialog();
+    } catch {
+      /* user cancelled */
+    }
+  }
+
   function onDownload() {
     setMenuOpen(false);
     if (pdfExportBusyRef.current) return;
@@ -737,13 +766,6 @@ export function PdfEditorClient({
       const bytes = await buildBytes();
       if (!bytes) throw new Error("export produced no PDF");
       const blob = new Blob([new Uint8Array(bytes)], { type: PDF_MIME });
-
-      if (values.fileHandle) {
-        await writePdfToFileHandle(values.fileHandle, blob);
-        toast.success(t("downloadReady"));
-        closeExportDialog();
-        return;
-      }
 
       const result = await downloadPdfBlob(blob, base);
       if (result.ok) {
@@ -1432,6 +1454,9 @@ export function PdfEditorClient({
         }}
         onSavePdf={onSavePdf}
         onDownloadTap={onDownloadTap}
+        onSaveToPath={() => {
+          void onSaveToPath();
+        }}
         onRetry={onRetryExport}
       />
     </div>

@@ -12,7 +12,6 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
-import { sanitizePdfBaseName } from "@/lib/export-docx-pdf";
 
 const easeOut = [0.23, 1, 0.32, 1] as const;
 
@@ -27,7 +26,6 @@ export type ExportPdfPhase = "form" | "generating" | "ready" | "error";
 
 export type ExportPdfFormValues = {
   title: string;
-  fileHandle: FileSystemFileHandle | null;
 };
 
 export type ExportPdfDialogLabels = {
@@ -60,63 +58,24 @@ export type ExportPdfDialogLabels = {
 function ExportPdfForm({
   initialName,
   isApple,
-  canPickPath,
   labels,
   onClose,
   onSubmitForm,
 }: {
   initialName: string;
   isApple: boolean;
-  canPickPath: boolean;
   labels: ExportPdfDialogLabels;
   onClose: () => void;
   onSubmitForm: (values: ExportPdfFormValues) => void;
 }) {
   const nameRef = useRef<HTMLInputElement>(null);
   const [title, setTitle] = useState(initialName);
-  const [localPath, setLocalPath] = useState("");
-  const [fileHandle, setFileHandle] = useState<FileSystemFileHandle | null>(
-    null,
-  );
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const timer = window.setTimeout(() => nameRef.current?.focus(), 50);
     return () => window.clearTimeout(timer);
   }, []);
-
-  async function pickLocalPath() {
-    const suggested = `${sanitizePdfBaseName(title.trim() || initialName)}.pdf`;
-    const picker = (
-      window as Window & {
-        showSaveFilePicker?: (options?: {
-          suggestedName?: string;
-          types?: {
-            description: string;
-            accept: Record<string, string[]>;
-          }[];
-        }) => Promise<FileSystemFileHandle>;
-      }
-    ).showSaveFilePicker;
-
-    if (typeof picker !== "function") {
-      setLocalPath(suggested);
-      return;
-    }
-
-    try {
-      const handle = await picker({
-        suggestedName: suggested,
-        types: [
-          { description: "PDF", accept: { "application/pdf": [".pdf"] } },
-        ],
-      });
-      setFileHandle(handle);
-      setLocalPath(handle.name);
-    } catch {
-      /* user cancelled */
-    }
-  }
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -126,7 +85,7 @@ function ExportPdfForm({
       return;
     }
     setError(null);
-    onSubmitForm({ title: nextTitle, fileHandle });
+    onSubmitForm({ title: nextTitle });
   }
 
   return (
@@ -145,43 +104,9 @@ function ExportPdfForm({
         />
       </label>
 
-      {isApple ? (
-        <p className="text-[11px] leading-relaxed text-muted">
-          {labels.pathHintIos}
-        </p>
-      ) : canPickPath ? (
-        <div className="space-y-1.5">
-          <span className="text-xs text-muted">{labels.pathLabel}</span>
-          <div className="flex gap-2">
-            <input
-              value={localPath}
-              onChange={(e) => {
-                setLocalPath(e.target.value);
-                setFileHandle(null);
-              }}
-              placeholder={labels.pathPlaceholder}
-              className="h-11 min-w-0 flex-1 rounded-xl border border-line bg-white/5 px-3 text-sm outline-none focus:border-accent"
-              dir="ltr"
-            />
-            <Button
-              type="button"
-              variant="ghost"
-              className="min-h-11 shrink-0 gap-1.5 px-3"
-              onClick={() => void pickLocalPath()}
-            >
-              <FolderOpen className="h-4 w-4" />
-              <span className="hidden sm:inline">{labels.pickPath}</span>
-            </Button>
-          </div>
-          <p className="text-[11px] leading-relaxed text-muted">
-            {labels.pathHintDesktop}
-          </p>
-        </div>
-      ) : (
-        <p className="text-[11px] leading-relaxed text-muted">
-          {labels.pathHintDesktop}
-        </p>
-      )}
+      <p className="text-[11px] leading-relaxed text-muted">
+        {isApple ? labels.pathHintIos : labels.pathHintDesktop}
+      </p>
 
       {error ? <p className="text-xs text-danger">{error}</p> : null}
 
@@ -214,6 +139,7 @@ export function ExportPdfDialog({
   onSubmitForm,
   onSavePdf,
   onDownloadTap,
+  onSaveToPath,
   onRetry,
 }: {
   open: boolean;
@@ -231,6 +157,7 @@ export function ExportPdfDialog({
   onSubmitForm: (values: ExportPdfFormValues) => void;
   onSavePdf: () => void;
   onDownloadTap: () => void;
+  onSaveToPath?: () => void;
   onRetry: () => void;
 }) {
   const titleId = useId();
@@ -321,17 +248,27 @@ export function ExportPdfDialog({
                 <p className="text-[11px] leading-relaxed text-muted">
                   {labels.fallbackHint}
                 </p>
-                <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-                  {/* A real anchor: iOS honours `download` only on a genuine tap. */}
+                <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
+                  {/* A real anchor: iOS/Android honour `download` only on a genuine tap. */}
                   <a
                     href={readyUrl}
                     download={readyFile.name}
-                    className={`${ACTION_BASE} ${canShare ? ACTION_GHOST : ACTION_SOLID}`}
+                    className={`${ACTION_BASE} ${canShare || canPickPath ? ACTION_GHOST : ACTION_SOLID}`}
                     onClick={onDownloadTap}
                   >
                     <Download className="h-4 w-4" />
                     {labels.download}
                   </a>
+                  {canPickPath && onSaveToPath ? (
+                    <button
+                      type="button"
+                      className={`${ACTION_BASE} ${ACTION_GHOST}`}
+                      onClick={onSaveToPath}
+                    >
+                      <FolderOpen className="h-4 w-4" />
+                      {labels.pickPath}
+                    </button>
+                  ) : null}
                   {canShare ? (
                     <button
                       type="button"
@@ -365,7 +302,6 @@ export function ExportPdfDialog({
               <ExportPdfForm
                 initialName={initialName}
                 isApple={isApple}
-                canPickPath={canPickPath}
                 labels={labels}
                 onClose={onClose}
                 onSubmitForm={onSubmitForm}
