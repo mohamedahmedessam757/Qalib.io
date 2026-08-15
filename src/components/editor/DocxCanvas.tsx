@@ -154,7 +154,7 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
         });
         await new Promise<void>((r) => requestAnimationFrame(() => r()));
         await new Promise<void>((r) => requestAnimationFrame(() => r()));
-        await new Promise<void>((r) => setTimeout(r, compact ? 200 : 160));
+        await new Promise<void>((r) => setTimeout(r, compact ? 320 : 160));
 
         const opts = {
           root: shell,
@@ -163,8 +163,6 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
           scrollToPage: (page: number) => editor?.scrollToPage?.(page),
           setZoom: (z: number) => editor?.setZoom?.(z),
           getZoom: () => editor?.getZoom?.() ?? 1,
-          getPageWidth: () =>
-            editor?.getEditorRef()?.getLayout()?.pageSize?.w ?? 816,
           onProgress: exportOpts?.onProgress,
         };
         try {
