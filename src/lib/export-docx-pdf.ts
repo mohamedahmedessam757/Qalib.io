@@ -4,7 +4,7 @@
 
 import { toCanvas, toJpeg, toPng } from "html-to-image";
 import { PDFDocument } from "pdf-lib";
-import { isAppleTouchDevice, isConstrainedCaptureDevice } from "@/lib/device";
+import { isConstrainedCaptureDevice } from "@/lib/device";
 
 /**
  * Sparse pages compress very small (especially at pixelRatio 1 on phones), so this
@@ -120,30 +120,60 @@ function nextFrame() {
 type CaptureProfile = {
   skipFonts: boolean;
   pixelRatio: number;
-  isolated: boolean;
+  flatten: boolean;
   jpeg: boolean;
 };
 
 function captureProfiles(constrained: boolean): CaptureProfile[] {
   if (constrained) {
-    // Phones: never embed webfonts first — Google Fonts + Noto Arabic blow
-    // Safari/Chrome's SVG data-URL limit and throw, which is the "export failed"
-    // dialog. System Arabic fonts still paint inside foreignObject on iOS.
     return [
-      { skipFonts: true, pixelRatio: 1, isolated: true, jpeg: false },
-      { skipFonts: true, pixelRatio: 1, isolated: false, jpeg: false },
-      { skipFonts: true, pixelRatio: 1, isolated: true, jpeg: true },
+      { skipFonts: true, pixelRatio: 1, flatten: true, jpeg: false },
+      { skipFonts: true, pixelRatio: 1, flatten: false, jpeg: false },
+      { skipFonts: true, pixelRatio: 1, flatten: true, jpeg: true },
     ];
   }
   return [
-    { skipFonts: false, pixelRatio: 2, isolated: false, jpeg: false },
-    { skipFonts: true, pixelRatio: 1, isolated: true, jpeg: false },
+    { skipFonts: false, pixelRatio: 2, flatten: false, jpeg: false },
+    { skipFonts: true, pixelRatio: 1, flatten: true, jpeg: false },
   ];
 }
 
 function captureFilter(node: HTMLElement): boolean {
   const tag = node.tagName;
   return tag !== "SCRIPT" && tag !== "IFRAME" && tag !== "VIDEO";
+}
+
+const SKIP_STYLE =
+  /^(animation|transition|offset|scroll-snap|overscroll|zoom|filter|backdrop-filter|transform|translate|rotate|scale|perspective|cursor|caret-color|resize|user-select)/;
+
+function inlineComputedTree(src: Element, dst: Element) {
+  if (src instanceof HTMLElement && dst instanceof HTMLElement) {
+    const cs = getComputedStyle(src);
+    for (let i = 0; i < cs.length; i += 1) {
+      const prop = cs.item(i);
+      if (!prop || prop.startsWith("--") || SKIP_STYLE.test(prop)) continue;
+      try {
+        dst.style.setProperty(
+          prop,
+          cs.getPropertyValue(prop),
+          cs.getPropertyPriority(prop),
+        );
+      } catch {
+        /* some computed props cannot be written */
+      }
+    }
+    dst.removeAttribute("class");
+    dst.style.setProperty("transform", "none");
+    dst.style.setProperty("filter", "none");
+    dst.style.setProperty("box-shadow", "none");
+    dst.style.setProperty("background-image", dst.style.backgroundImage);
+  }
+  const srcKids = src.children;
+  const dstKids = dst.children;
+  const n = Math.min(srcKids.length, dstKids.length);
+  for (let i = 0; i < n; i += 1) {
+    inlineComputedTree(srcKids[i]!, dstKids[i]!);
+  }
 }
 
 function buildCaptureOptions(
@@ -164,22 +194,56 @@ function buildCaptureOptions(
       boxShadow: "none",
       margin: "0",
       transform: "none",
-      zoom: "normal",
-      backdropFilter: "none",
       filter: "none",
     },
-    onclone: (_doc: Document, cloned?: HTMLElement) => {
-      if (!cloned) return;
-      cloned.style.boxShadow = "none";
-      cloned.style.margin = "0";
-      cloned.style.transform = "none";
-      cloned.style.filter = "none";
-      cloned.style.backdropFilter = "none";
-      cloned.style.backgroundColor = "#ffffff";
-      cloned.style.width = `${width}px`;
-      cloned.style.height = `${height}px`;
-    },
   };
+}
+
+function isMostlyBlankCanvas(canvas: HTMLCanvasElement): boolean {
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx || canvas.width < 2 || canvas.height < 2) return true;
+  const stepX = Math.max(6, Math.floor(canvas.width / 24));
+  const stepY = Math.max(6, Math.floor(canvas.height / 24));
+  let samples = 0;
+  let ink = 0;
+  for (let y = 0; y < canvas.height; y += stepY) {
+    for (let x = 0; x < canvas.width; x += stepX) {
+      const p = ctx.getImageData(x, y, 1, 1).data;
+      samples += 1;
+      if (p[0] < 248 || p[1] < 248 || p[2] < 248) ink += 1;
+    }
+  }
+  return samples > 0 && ink / samples < 0.008;
+}
+
+function dataUrlToCanvas(dataUrl: string): Promise<HTMLCanvasElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, img.naturalWidth || img.width);
+      canvas.height = Math.max(1, img.naturalHeight || img.height);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        reject(new Error("Canvas context unavailable"));
+        return;
+      }
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0);
+      resolve(canvas);
+    };
+    img.onerror = () => reject(new Error("Raster image failed to decode"));
+    img.src = dataUrl;
+  });
+}
+
+async function assertNotBlank(dataUrl: string): Promise<string> {
+  const canvas = await dataUrlToCanvas(dataUrl);
+  if (isMostlyBlankCanvas(canvas)) {
+    throw new Error("Captured page was blank");
+  }
+  return dataUrl;
 }
 
 async function rasterizeNode(
@@ -191,28 +255,30 @@ async function rasterizeNode(
   const opts = buildCaptureOptions(width, height, profile);
   if (profile.jpeg) {
     const dataUrl = await toJpeg(node, { ...opts, quality: 0.92 });
-    if (isJpegDataUrl(dataUrl) && looksComplete(dataUrl)) return dataUrl;
-    throw new Error("JPEG capture was empty");
+    if (!isJpegDataUrl(dataUrl) || !looksComplete(dataUrl)) {
+      throw new Error("JPEG capture was empty");
+    }
+    return assertNotBlank(dataUrl);
   }
   try {
     const dataUrl = await toPng(node, opts);
-    if (isPngDataUrl(dataUrl) && looksComplete(dataUrl)) return dataUrl;
-    if (isPngDataUrl(dataUrl)) return dataUrl;
+    if (isPngDataUrl(dataUrl)) return await assertNotBlank(dataUrl);
   } catch {
     /* fall through to canvas */
   }
   const canvas = await toCanvas(node, opts);
-  if (canvas.width < 2 || canvas.height < 2) {
-    throw new Error("Canvas capture was empty");
+  if (isMostlyBlankCanvas(canvas)) {
+    throw new Error("Canvas capture was blank");
   }
   return canvas.toDataURL("image/png");
 }
 
 /**
- * Clone the page into a viewport-attached host so ancestor CSS zoom / overflow
- * cannot poison html-to-image. Keep a trace of opacity so WebKit still paints.
+ * Clone the live page with resolved computed styles so CSS variables, oklch,
+ * and color-mix from Tailwind / Eigenpal cannot render as transparent text.
+ * Capturing a raw clone outside `.ep-root` produced empty white PDFs.
  */
-async function withIsolatedClone<T>(
+async function withFlattenedClone<T>(
   pageEl: HTMLElement,
   width: number,
   height: number,
@@ -224,7 +290,7 @@ async function withIsolatedClone<T>(
     "position:fixed",
     "left:0",
     "top:0",
-    "z-index:0",
+    "z-index:2147483646",
     `width:${width}px`,
     `height:${height}px`,
     "overflow:visible",
@@ -233,12 +299,11 @@ async function withIsolatedClone<T>(
     "opacity:0.02",
   ].join(";");
   const clone = pageEl.cloneNode(true) as HTMLElement;
-  clone.style.boxShadow = "none";
-  clone.style.margin = "0";
-  clone.style.transform = "none";
+  inlineComputedTree(pageEl, clone);
   clone.style.width = `${width}px`;
   clone.style.height = `${height}px`;
   clone.style.backgroundColor = "#ffffff";
+  clone.style.color = clone.style.color || "#000000";
   host.appendChild(clone);
   document.body.appendChild(host);
   try {
@@ -272,8 +337,8 @@ async function capturePageImage(pageEl: HTMLElement): Promise<string> {
   let lastError: unknown;
   for (const profile of profiles) {
     try {
-      if (profile.isolated) {
-        return await withIsolatedClone(pageEl, width, height, (clone) =>
+      if (profile.flatten) {
+        return await withFlattenedClone(pageEl, width, height, (clone) =>
           rasterizeNode(clone, profile, width, height),
         );
       }
@@ -451,17 +516,19 @@ export async function writePdfToFileHandle(
  * iOS: never auto-share after long generation — return needs-share for a fresh tap.
  * Desktop: anchor download.
  */
-export async function downloadPdfBlob(
+export function downloadPdfBlob(
   blob: Blob,
   title: string,
 ): Promise<PdfDeliveryResult> {
   const fileName = `${sanitizePdfBaseName(title)}.pdf`;
 
-  if (isAppleTouchDevice()) {
-    // Best practice: prepare first, Share only from the next user tap.
-    return { ok: false, mode: "needs-share", blob, fileName };
+  // Phones (iOS and Android): a programmatic <a download> after a long generate
+  // is not a user gesture, so Chrome/Safari often write an empty file. Always
+  // hand the blob back for a real tap on a download/share control.
+  if (isConstrainedCaptureDevice()) {
+    return Promise.resolve({ ok: false, mode: "needs-share", blob, fileName });
   }
 
   downloadViaAnchor(blob, fileName);
-  return { ok: true, mode: "download" };
+  return Promise.resolve({ ok: true, mode: "download" });
 }
