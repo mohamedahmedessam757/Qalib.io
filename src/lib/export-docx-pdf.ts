@@ -264,15 +264,8 @@ export async function sharePdfFile(
   }
 
   // iOS rejects combining `url` with `files`; keep payload to files only.
+  // Do not gate on canShare — WebKit false-negatives are common; try share() directly.
   const data: ShareData = { files: [file] };
-  // canShare false-negatives are common on WebKit — still attempt share().
-  if (typeof navigator.canShare === "function") {
-    try {
-      void navigator.canShare(data);
-    } catch {
-      /* ignore — still try share */
-    }
-  }
   try {
     await navigator.share(data);
     return "shared";

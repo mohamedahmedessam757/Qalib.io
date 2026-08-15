@@ -146,6 +146,16 @@ export function DocxEditorClient({
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pdfExportBusyRef = useRef(false);
+  const pdfReadyUrlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (pdfReadyUrlRef.current) {
+        URL.revokeObjectURL(pdfReadyUrlRef.current);
+        pdfReadyUrlRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -414,11 +424,16 @@ export function DocxEditorClient({
     toast.success(t("downloadReady"));
   }
 
-  function closeExportDialog() {
-    if (pdfReadyUrl) {
-      URL.revokeObjectURL(pdfReadyUrl);
+  function revokePdfReadyUrl() {
+    if (pdfReadyUrlRef.current) {
+      URL.revokeObjectURL(pdfReadyUrlRef.current);
+      pdfReadyUrlRef.current = null;
     }
     setPdfReadyUrl(null);
+  }
+
+  function closeExportDialog() {
+    revokePdfReadyUrl();
     setPdfReadyFile(null);
     setPdfExportPhase("form");
     setPdfProgress({ current: 0, total: 0 });
@@ -428,6 +443,7 @@ export function DocxEditorClient({
 
   function onSavePdf() {
     if (!pdfReadyFile) return;
+    // File is pre-materialized — first await inside sharePdfFile is navigator.share.
     void sharePdfFile(pdfReadyFile).then((shareResult) => {
       if (shareResult === "shared") {
         toast.success(t("downloadReady"));
@@ -442,6 +458,8 @@ export function DocxEditorClient({
   function onPdf() {
     setMenuOpen(false);
     if (pdfExportBusyRef.current) return;
+    revokePdfReadyUrl();
+    setPdfReadyFile(null);
     setPdfExportPhase("form");
     setPdfProgress({ current: 0, total: 0 });
     setPdfExportOpen(true);
@@ -481,7 +499,9 @@ export function DocxEditorClient({
       }
 
       const readyFile = await materializePdfFile(result.blob, result.fileName);
+      revokePdfReadyUrl();
       const url = createPdfObjectUrl(readyFile);
+      pdfReadyUrlRef.current = url;
       setPdfReadyFile(readyFile);
       setPdfReadyUrl(url);
       setPdfExportPhase("ready");

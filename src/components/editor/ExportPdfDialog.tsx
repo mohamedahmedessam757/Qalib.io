@@ -4,6 +4,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { FileDown, FolderOpen, LoaderCircle, X } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { sanitizePdfBaseName } from "@/lib/export-docx-pdf";
 
 const easeOut = [0.23, 1, 0.32, 1] as const;
 
@@ -84,7 +85,7 @@ export function ExportPdfDialog({
   }, [open, initialName, phase]);
 
   async function pickLocalPath() {
-    const suggested = `${(title.trim() || initialName || "document").replace(/\.pdf$/i, "")}.pdf`;
+    const suggested = `${sanitizePdfBaseName(title.trim() || initialName || "document")}.pdf`;
     const picker = (
       window as Window & {
         showSaveFilePicker?: (options?: {

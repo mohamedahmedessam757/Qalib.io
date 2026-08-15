@@ -179,10 +179,20 @@ export function PdfEditorClient({
   const pdfHandleRef = useRef<PdfEditorHandle | null>(null);
   const dummyEditorRef = useRef(null);
   const pdfExportBusyRef = useRef(false);
+  const pdfReadyUrlRef = useRef<string | null>(null);
 
   const setBufferSafe = useCallback((next: ArrayBuffer | null) => {
     bufferRef.current = next;
     setBuffer(next);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (pdfReadyUrlRef.current) {
+        URL.revokeObjectURL(pdfReadyUrlRef.current);
+        pdfReadyUrlRef.current = null;
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -662,11 +672,16 @@ export function PdfEditorClient({
     }
   }
 
-  function closeExportDialog() {
-    if (pdfReadyUrl) {
-      URL.revokeObjectURL(pdfReadyUrl);
+  function revokePdfReadyUrl() {
+    if (pdfReadyUrlRef.current) {
+      URL.revokeObjectURL(pdfReadyUrlRef.current);
+      pdfReadyUrlRef.current = null;
     }
     setPdfReadyUrl(null);
+  }
+
+  function closeExportDialog() {
+    revokePdfReadyUrl();
     setPdfReadyFile(null);
     setPdfExportPhase("form");
     setPdfExportOpen(false);
@@ -688,6 +703,8 @@ export function PdfEditorClient({
   function onDownload() {
     setMenuOpen(false);
     if (pdfExportBusyRef.current) return;
+    revokePdfReadyUrl();
+    setPdfReadyFile(null);
     setPdfExportPhase("form");
     setPdfExportOpen(true);
   }
@@ -722,7 +739,9 @@ export function PdfEditorClient({
       }
 
       const readyFile = await materializePdfFile(result.blob, result.fileName);
+      revokePdfReadyUrl();
       const url = createPdfObjectUrl(readyFile);
+      pdfReadyUrlRef.current = url;
       setPdfReadyFile(readyFile);
       setPdfReadyUrl(url);
       setPdfExportPhase("ready");
