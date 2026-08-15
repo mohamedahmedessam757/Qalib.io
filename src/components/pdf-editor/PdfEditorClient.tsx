@@ -46,10 +46,11 @@ import { AiChatPanel } from "@/components/ai/AiChatPanel";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { PDF_MIME } from "@/lib/documents";
 import {
+  canSharePdfFiles,
   createPdfObjectUrl,
   downloadPdfBlob,
   materializePdfFile,
-  openPdfFallbackFromGesture,
+  revokePdfObjectUrlSoon,
   sanitizePdfBaseName,
   sharePdfFile,
   writePdfToFileHandle,
@@ -74,6 +75,7 @@ import { PdfToolbar, type PdfTool } from "./PdfToolbar";
 import {
   ExportPdfDialog,
   type ExportPdfFormValues,
+  type ExportPdfPhase,
 } from "@/components/editor/ExportPdfDialog";
 
 const PdfCanvas = dynamic(
@@ -165,11 +167,15 @@ export function PdfEditorClient({
   const [deletingPage, setDeletingPage] = useState(false);
   const [pending, startTransition] = useTransition();
   const [pdfExportOpen, setPdfExportOpen] = useState(false);
-  const [pdfExportPhase, setPdfExportPhase] = useState<
-    "form" | "generating" | "ready"
-  >("form");
+  const [pdfExportPhase, setPdfExportPhase] = useState<ExportPdfPhase>("form");
   const [pdfReadyFile, setPdfReadyFile] = useState<File | null>(null);
   const [pdfReadyUrl, setPdfReadyUrl] = useState<string | null>(null);
+  // Read when the dialog opens: these APIs do not exist during SSR.
+  const [pdfCaps, setPdfCaps] = useState({
+    isApple: false,
+    canPickPath: false,
+    canShare: false,
+  });
   const dirtyRef = useRef(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -180,6 +186,7 @@ export function PdfEditorClient({
   const dummyEditorRef = useRef(null);
   const pdfExportBusyRef = useRef(false);
   const pdfReadyUrlRef = useRef<string | null>(null);
+  const lastExportValuesRef = useRef<ExportPdfFormValues | null>(null);
 
   const setBufferSafe = useCallback((next: ArrayBuffer | null) => {
     bufferRef.current = next;
@@ -189,7 +196,7 @@ export function PdfEditorClient({
   useEffect(() => {
     return () => {
       if (pdfReadyUrlRef.current) {
-        URL.revokeObjectURL(pdfReadyUrlRef.current);
+        revokePdfObjectUrlSoon(pdfReadyUrlRef.current);
         pdfReadyUrlRef.current = null;
       }
     };
@@ -672,17 +679,17 @@ export function PdfEditorClient({
     }
   }
 
-  function revokePdfReadyUrl() {
+  function releasePdfReadyUrl() {
     if (pdfReadyUrlRef.current) {
-      URL.revokeObjectURL(pdfReadyUrlRef.current);
+      revokePdfObjectUrlSoon(pdfReadyUrlRef.current);
       pdfReadyUrlRef.current = null;
     }
     setPdfReadyUrl(null);
+    setPdfReadyFile(null);
   }
 
   function closeExportDialog() {
-    revokePdfReadyUrl();
-    setPdfReadyFile(null);
+    releasePdfReadyUrl();
     setPdfExportPhase("form");
     setPdfExportOpen(false);
     pdfExportBusyRef.current = false;
@@ -690,21 +697,31 @@ export function PdfEditorClient({
 
   function onSavePdf() {
     if (!pdfReadyFile) return;
+    // The File is already built, so navigator.share runs inside this tap.
     void sharePdfFile(pdfReadyFile).then((shareResult) => {
       if (shareResult === "shared") {
         toast.success(t("downloadReady"));
         closeExportDialog();
       } else if (shareResult === "failed") {
-        openPdfFallbackFromGesture(pdfReadyFile, pdfReadyFile.name);
+        toast.error(te("exportPdfShareFailed"));
       }
     });
+  }
+
+  function onDownloadTap() {
+    toast.success(t("downloadReady"));
+    window.setTimeout(closeExportDialog, 1200);
   }
 
   function onDownload() {
     setMenuOpen(false);
     if (pdfExportBusyRef.current) return;
-    revokePdfReadyUrl();
-    setPdfReadyFile(null);
+    releasePdfReadyUrl();
+    setPdfCaps({
+      isApple: isAppleTouchDevice(),
+      canPickPath: hasSaveFilePicker(),
+      canShare: canSharePdfFiles(),
+    });
     setPdfExportPhase("form");
     setPdfExportOpen(true);
   }
@@ -712,12 +729,13 @@ export function PdfEditorClient({
   async function onExportPdfFormSubmit(values: ExportPdfFormValues) {
     if (pdfExportBusyRef.current) return;
     pdfExportBusyRef.current = true;
+    lastExportValuesRef.current = values;
     setPdfExportPhase("generating");
 
     const base = sanitizePdfBaseName(values.title);
     try {
       const bytes = await buildBytes();
-      if (!bytes) throw new Error("export failed");
+      if (!bytes) throw new Error("export produced no PDF");
       const blob = new Blob([new Uint8Array(bytes)], { type: PDF_MIME });
 
       if (values.fileHandle) {
@@ -739,7 +757,7 @@ export function PdfEditorClient({
       }
 
       const readyFile = await materializePdfFile(result.blob, result.fileName);
-      revokePdfReadyUrl();
+      releasePdfReadyUrl();
       const url = createPdfObjectUrl(readyFile);
       pdfReadyUrlRef.current = url;
       setPdfReadyFile(readyFile);
@@ -747,9 +765,18 @@ export function PdfEditorClient({
       setPdfExportPhase("ready");
       pdfExportBusyRef.current = false;
     } catch {
-      toast.error(te("pdfExportError"));
-      closeExportDialog();
+      setPdfExportPhase("error");
+      pdfExportBusyRef.current = false;
     }
+  }
+
+  function onRetryExport() {
+    const values = lastExportValuesRef.current;
+    if (!values) {
+      setPdfExportPhase("form");
+      return;
+    }
+    void onExportPdfFormSubmit(values);
   }
 
   const selected = overlays.find((o) => o.id === selectedId) || null;
@@ -1372,11 +1399,11 @@ export function PdfEditorClient({
         open={pdfExportOpen}
         initialName={title || "document"}
         phase={pdfExportPhase}
-        isApple={isAppleTouchDevice()}
-        canPickPath={hasSaveFilePicker()}
+        isApple={pdfCaps.isApple}
+        canPickPath={pdfCaps.canPickPath}
+        canShare={pdfCaps.canShare}
         readyFile={pdfReadyFile}
         readyUrl={pdfReadyUrl}
-        submitting={pdfExportPhase === "generating"}
         labels={{
           title: te("exportPdfFormTitle"),
           nameLabel: te("exportPdfNameLabel"),
@@ -1393,14 +1420,19 @@ export function PdfEditorClient({
           progress: te("exportPdfProgress"),
           readyTitle: te("exportPdfReadyTitle"),
           save: te("exportPdfSave"),
-          openFallback: te("exportPdfOpenFallback"),
+          download: te("exportPdfDownload"),
           fallbackHint: te("exportPdfFallbackHint"),
+          errorTitle: te("exportPdfErrorTitle"),
+          errorBody: te("exportPdfErrorBody"),
+          retry: te("exportPdfRetry"),
         }}
         onClose={closeExportDialog}
         onSubmitForm={(values) => {
           void onExportPdfFormSubmit(values);
         }}
         onSavePdf={onSavePdf}
+        onDownloadTap={onDownloadTap}
+        onRetry={onRetryExport}
       />
     </div>
   );
