@@ -151,7 +151,10 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
         flushSync(() => {
           setViewScale(1);
         });
+        // Two frames + a short pause so Eigenpal can reflow at zoom 1 before capture.
         await new Promise<void>((r) => requestAnimationFrame(() => r()));
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+        await new Promise<void>((r) => setTimeout(r, 160));
 
         const opts = {
           root: shell,
@@ -244,7 +247,7 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
         data-compact={compactChrome ? "true" : "false"}
         data-qalib-skip-clamp="true"
         style={
-          compactChrome
+          compactChrome && viewScale !== 1
             ? ({ zoom: viewScale } as CSSProperties)
             : undefined
         }
