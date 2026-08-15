@@ -6,7 +6,11 @@ import { toPng } from "html-to-image";
 import { PDFDocument } from "pdf-lib";
 import { isAppleTouchDevice } from "@/lib/device";
 
-const MIN_PNG_DATA_URL_LENGTH = 8000;
+/**
+ * Sparse pages compress very small (especially at pixelRatio 1 on iOS), so this
+ * only flags an obviously broken capture — it never decides the export outcome.
+ */
+const SUSPICIOUS_PNG_DATA_URL_LENGTH = 1200;
 const CAPTURE_ATTEMPTS = 3;
 
 export type ExportDocxPdfOptions = {
@@ -16,6 +20,7 @@ export type ExportDocxPdfOptions = {
   scrollToPage?: (page: number) => void;
   setZoom?: (z: number) => void;
   getZoom?: () => number;
+  onProgress?: (current: number, total: number) => void;
 };
 
 async function revealAllPages(
@@ -86,12 +91,12 @@ function dataUrlToBytes(dataUrl: string): Uint8Array {
   return out;
 }
 
-function isValidPngDataUrl(dataUrl: string): boolean {
-  return (
-    typeof dataUrl === "string" &&
-    dataUrl.startsWith("data:image/png") &&
-    dataUrl.length >= MIN_PNG_DATA_URL_LENGTH
-  );
+function isPngDataUrl(dataUrl: unknown): dataUrl is string {
+  return typeof dataUrl === "string" && dataUrl.startsWith("data:image/png");
+}
+
+function looksComplete(dataUrl: string): boolean {
+  return dataUrl.length >= SUSPICIOUS_PNG_DATA_URL_LENGTH;
 }
 
 function captureOptions(pixelRatio: number) {
@@ -107,31 +112,48 @@ function captureOptions(pixelRatio: number) {
 }
 
 /**
- * Safari often returns a blank PNG on the first foreignObject capture.
- * Warm once, then capture for real; retry if still empty.
+ * Safari returns a blank PNG on the first foreignObject capture, so the very
+ * first page of an export warms the cache with a throwaway render. Warming
+ * every page would double the work and make iOS exports crawl.
+ *
+ * A suspiciously small PNG is retried, but a decodable PNG is always preferred
+ * over failing the whole export.
  */
-async function capturePagePng(pageEl: HTMLElement): Promise<string> {
-  const pixelRatio = isAppleTouchDevice() ? 1 : 2;
-  const opts = captureOptions(pixelRatio);
+async function capturePagePng(
+  pageEl: HTMLElement,
+  warmFirst: boolean,
+): Promise<string> {
+  const opts = captureOptions(isAppleTouchDevice() ? 1 : 2);
 
-  // Warm Safari SVG/foreignObject image cache (discarded).
-  try {
-    await toPng(pageEl, opts);
-  } catch {
-    /* first pass may throw; second pass can still succeed */
+  if (warmFirst) {
+    try {
+      await toPng(pageEl, opts);
+    } catch {
+      /* first pass may throw; the real pass can still succeed */
+    }
   }
 
+  let fallback: string | null = null;
   let lastError: unknown;
+
   for (let attempt = 0; attempt < CAPTURE_ATTEMPTS; attempt += 1) {
     try {
       const dataUrl = await toPng(pageEl, opts);
-      if (isValidPngDataUrl(dataUrl)) return dataUrl;
-      lastError = new Error("Blank or too-small page capture");
+      if (isPngDataUrl(dataUrl)) {
+        if (looksComplete(dataUrl)) return dataUrl;
+        fallback = dataUrl;
+      } else {
+        lastError = new Error("Capture did not return a PNG");
+      }
     } catch (err) {
       lastError = err;
     }
-    await new Promise<void>((r) => setTimeout(r, 100));
+    if (attempt < CAPTURE_ATTEMPTS - 1) {
+      await new Promise<void>((r) => setTimeout(r, 100));
+    }
   }
+
+  if (fallback) return fallback;
 
   throw lastError instanceof Error
     ? lastError
@@ -158,13 +180,17 @@ export async function exportDocxPagesToPdfBlob(
     }
 
     const pdf = await PDFDocument.create();
+    const needsWarmUp = isAppleTouchDevice();
 
-    for (const pageEl of pages) {
+    for (let i = 0; i < pages.length; i += 1) {
+      const pageEl = pages[i]!;
+      opts.onProgress?.(i + 1, pages.length);
+
       // CSS box size → PDF page size (points ≈ CSS px for screen-fidelity export).
       const cssW = Math.max(1, pageEl.offsetWidth);
       const cssH = Math.max(1, pageEl.offsetHeight);
 
-      const dataUrl = await capturePagePng(pageEl);
+      const dataUrl = await capturePagePng(pageEl, needsWarmUp && i === 0);
       const pngBytes = dataUrlToBytes(dataUrl);
       const img = await pdf.embedPng(pngBytes);
       const page = pdf.addPage([cssW, cssH]);
@@ -190,6 +216,8 @@ function sanitizePdfBaseName(title: string): string {
   return base.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim() || "document";
 }
 
+export { sanitizePdfBaseName };
+
 function isAbortError(err: unknown): boolean {
   return (
     (err instanceof DOMException || err instanceof Error) &&
@@ -199,17 +227,15 @@ function isAbortError(err: unknown): boolean {
 
 function downloadViaAnchor(blob: Blob, fileName: string) {
   const url = URL.createObjectURL(blob);
-  try {
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = fileName;
-    a.rel = "noopener";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  } finally {
-    URL.revokeObjectURL(url);
-  }
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Delayed revoke — immediate revoke can kill the download on some browsers.
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 export type PdfDeliveryResult =
@@ -222,8 +248,10 @@ export async function materializePdfFile(
   blob: Blob,
   fileName: string,
 ): Promise<File> {
-  const bytes = new Uint8Array(await blob.arrayBuffer());
-  return new File([bytes], fileName, {
+  if (blob instanceof File && blob.type === "application/pdf" && blob.name) {
+    return blob;
+  }
+  return new File([blob], fileName, {
     type: "application/pdf",
     lastModified: Date.now(),
   });
@@ -233,39 +261,47 @@ export async function materializePdfFile(
  * Share a ready PDF File from a user gesture.
  * Must be invoked directly from a click — avoid awaits before this call.
  */
-export async function sharePdfFile(
-  fileOrBlob: File | Blob,
-  fileName?: string,
+export function sharePdfFile(
+  file: File,
 ): Promise<"shared" | "aborted" | "failed"> {
-  if (typeof navigator.share !== "function") return "failed";
+  if (!canSharePdfFiles()) return Promise.resolve("failed");
 
-  let file: File;
-  if (fileOrBlob instanceof File && fileOrBlob.type === "application/pdf") {
-    file = fileOrBlob;
-  } else {
-    // Fallback path (should be rare) — may lose gesture on older iOS.
-    try {
-      file = await materializePdfFile(
-        fileOrBlob,
-        fileName ||
-          (fileOrBlob instanceof File ? fileOrBlob.name : "document.pdf"),
-      );
-    } catch {
-      return "failed";
-    }
-  }
+  // iOS rejects combining `url` or `text` with `files`; keep the payload to files.
+  // Do not gate on canShare — WebKit false-negatives are common.
+  return navigator
+    .share({ files: [file] })
+    .then(() => "shared" as const)
+    .catch((err: unknown) => (isAbortError(err) ? "aborted" : "failed"));
+}
 
-  // iOS rejects combining `url` with `files`; keep payload to files only.
-  const data: ShareData = { files: [file] };
-  if (typeof navigator.canShare === "function" && !navigator.canShare(data)) {
-    return "failed";
-  }
+/** Whether the platform can hand a PDF file to the OS share sheet at all. */
+export function canSharePdfFiles(): boolean {
+  if (typeof navigator === "undefined") return false;
+  // Web Share with files needs a secure context; navigator.share is absent otherwise.
+  return typeof navigator.share === "function";
+}
+
+export function createPdfObjectUrl(fileOrBlob: File | Blob): string {
+  return URL.createObjectURL(fileOrBlob);
+}
+
+/**
+ * Revoking while iOS is still handing the blob to its download manager kills the
+ * save, so object URLs outlive the dialog that created them.
+ */
+export function revokePdfObjectUrlSoon(url: string, delayMs = 60_000): void {
+  window.setTimeout(() => URL.revokeObjectURL(url), delayMs);
+}
+
+export async function writePdfToFileHandle(
+  handle: FileSystemFileHandle,
+  blob: Blob,
+): Promise<void> {
+  const writable = await handle.createWritable();
   try {
-    await navigator.share(data);
-    return "shared";
-  } catch (err) {
-    if (isAbortError(err)) return "aborted";
-    return "failed";
+    await writable.write(blob);
+  } finally {
+    await writable.close();
   }
 }
 

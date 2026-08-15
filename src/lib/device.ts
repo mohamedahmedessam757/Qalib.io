@@ -7,3 +7,14 @@ export function isAppleTouchDevice(): boolean {
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
   );
 }
+
+export function hasSaveFilePicker(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof (
+      window as Window & {
+        showSaveFilePicker?: unknown;
+      }
+    ).showSaveFilePicker === "function"
+  );
+}

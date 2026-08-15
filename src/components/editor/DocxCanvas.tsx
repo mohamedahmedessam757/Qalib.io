@@ -17,20 +17,19 @@ import {
 import { flushSync } from "react-dom";
 import type { EditorView } from "prosemirror-view";
 import { startMenuClampWatcher } from "@/lib/clamp-floating-menus";
-import {
-  downloadPdfBlob,
-  exportDocxPagesToPdfBlob,
-} from "@/lib/export-docx-pdf";
-import { isAppleTouchDevice } from "@/lib/device";
-import { printDocxAsPdf } from "@/lib/print-docx";
+import { exportDocxPagesToPdfBlob } from "@/lib/export-docx-pdf";
 
 const PAGE_PAD = 8;
 const MIN_ZOOM = 0.35;
 const MAX_ZOOM = 2.5;
 
+export type PrintDocumentOptions = {
+  onProgress?: (current: number, total: number) => void;
+};
+
 export type DocxCanvasHandle = DocxEditorRef & {
   fitToWidth: () => void;
-  printDocument: () => Promise<Blob>;
+  printDocument: (opts?: PrintDocumentOptions) => Promise<Blob>;
   adjustZoom: (delta: number) => number;
   getZoomLevel: () => number;
 };
@@ -42,6 +41,7 @@ type DocxCanvasProps = {
   onSelectionChange?: () => void;
   onReady?: () => void;
   onZoomChange?: (zoom: number) => void;
+  onRequestPdfExport?: () => void;
 };
 
 function clampZoom(value: number) {
@@ -63,6 +63,7 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
       onSelectionChange,
       onReady,
       onZoomChange,
+      onRequestPdfExport,
     },
     ref,
   ) {
@@ -75,9 +76,11 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
     const viewScaleRef = useRef(1);
     const fitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const onZoomChangeRef = useRef(onZoomChange);
+    const onRequestPdfExportRef = useRef(onRequestPdfExport);
     const compactRef = useRef(compactChrome);
     const [viewScale, setViewScale] = useState(1);
     onZoomChangeRef.current = onZoomChange;
+    onRequestPdfExportRef.current = onRequestPdfExport;
     compactRef.current = compactChrome;
 
     const reportZoom = useCallback(() => {
@@ -137,53 +140,44 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
       return baseZoomRef.current * viewScaleRef.current;
     }, []);
 
-    const printDocument = useCallback(async (): Promise<Blob> => {
-      const editor = editorRef.current;
-      const shell = shellRef.current;
-      if (!shell) throw new Error("Editor shell not ready");
-      const prevScale = viewScaleRef.current;
-      // Must paint CSS zoom:1 before html-to-image (mobile uses style.zoom).
-      viewScaleRef.current = 1;
-      flushSync(() => {
-        setViewScale(1);
-      });
-      await new Promise<void>((r) => requestAnimationFrame(() => r()));
-
-      const opts = {
-        root: shell,
-        title: "Qalib document",
-        totalPages: editor?.getTotalPages?.() || 1,
-        scrollToPage: (page: number) => editor?.scrollToPage?.(page),
-        setZoom: (z: number) => editor?.setZoom?.(z),
-        getZoom: () => editor?.getZoom?.() ?? 1,
-      };
-      try {
-        return await exportDocxPagesToPdfBlob(opts);
-      } catch (err) {
-        // Never print on iOS — Safari print chrome injects URL/time/page numbers.
-        if (!isAppleTouchDevice()) {
-          await printDocxAsPdf(opts);
-        }
-        throw err;
-      } finally {
-        viewScaleRef.current = prevScale;
+    const printDocument = useCallback(
+      async (exportOpts?: PrintDocumentOptions): Promise<Blob> => {
+        const editor = editorRef.current;
+        const shell = shellRef.current;
+        if (!shell) throw new Error("Editor shell not ready");
+        const prevScale = viewScaleRef.current;
+        // Must paint CSS zoom:1 before html-to-image (mobile uses style.zoom).
+        viewScaleRef.current = 1;
         flushSync(() => {
-          setViewScale(prevScale);
+          setViewScale(1);
         });
-        reportZoom();
-      }
-    }, [reportZoom]);
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
 
-    const exportAndDownload = useCallback(async () => {
-      try {
-        const blob = await printDocument();
-        const result = await downloadPdfBlob(blob, "document");
-        // needs-share: user should use Export PDF in the app chrome (i18n + Save tap).
-        void result;
-      } catch {
-        /* ignore — Eigenpal Print has no toast surface here */
-      }
-    }, [printDocument]);
+        const opts = {
+          root: shell,
+          title: "Qalib document",
+          totalPages: editor?.getTotalPages?.() || 1,
+          scrollToPage: (page: number) => editor?.scrollToPage?.(page),
+          setZoom: (z: number) => editor?.setZoom?.(z),
+          getZoom: () => editor?.getZoom?.() ?? 1,
+          onProgress: exportOpts?.onProgress,
+        };
+        try {
+          return await exportDocxPagesToPdfBlob(opts);
+        } finally {
+          viewScaleRef.current = prevScale;
+          flushSync(() => {
+            setViewScale(prevScale);
+          });
+          reportZoom();
+        }
+      },
+      [reportZoom],
+    );
+
+    const requestPdfExport = useCallback(() => {
+      onRequestPdfExportRef.current?.();
+    }, []);
 
     useImperativeHandle(
       ref,
@@ -196,7 +190,7 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
             if (prop === "getZoomLevel") return getZoomLevel;
             if (prop === "print")
               return () => {
-                void exportAndDownload();
+                requestPdfExport();
               };
             const editor = editorRef.current;
             if (!editor) return undefined;
@@ -204,7 +198,7 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
             return typeof value === "function" ? value.bind(editor) : value;
           },
         }),
-      [fitToWidth, printDocument, exportAndDownload, adjustZoom, getZoomLevel],
+      [fitToWidth, printDocument, requestPdfExport, adjustZoom, getZoomLevel],
     );
 
     useEffect(() => {
@@ -271,7 +265,7 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
           onSelectionChange={() => onSelectionChange?.()}
           onEditorViewReady={handleViewReady}
           onPrint={() => {
-            void exportAndDownload();
+            requestPdfExport();
           }}
           onFontsLoaded={() => {
             // Never re-fit on mobile after fonts — that freezes mid-scroll.

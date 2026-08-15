@@ -46,6 +46,17 @@ import { AiChatPanel } from "@/components/ai/AiChatPanel";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { PDF_MIME } from "@/lib/documents";
 import {
+  canSharePdfFiles,
+  createPdfObjectUrl,
+  downloadPdfBlob,
+  materializePdfFile,
+  revokePdfObjectUrlSoon,
+  sanitizePdfBaseName,
+  sharePdfFile,
+  writePdfToFileHandle,
+} from "@/lib/export-docx-pdf";
+import { hasSaveFilePicker, isAppleTouchDevice } from "@/lib/device";
+import {
   getCachedDocumentMeta,
   setCachedDocumentMeta,
 } from "@/lib/document-cache";
@@ -61,6 +72,11 @@ import { ensureNotoArabicFont } from "@/lib/pdf/arabic-canvas";
 import { findLegacyBlankTitleBox } from "@/lib/pdf/strip-legacy-title";
 import type { PdfEditorHandle } from "@/lib/ai/apply-pdf-tools";
 import { PdfToolbar, type PdfTool } from "./PdfToolbar";
+import {
+  ExportPdfDialog,
+  type ExportPdfFormValues,
+  type ExportPdfPhase,
+} from "@/components/editor/ExportPdfDialog";
 
 const PdfCanvas = dynamic(
   () => import("./PdfCanvas").then((m) => m.PdfCanvas),
@@ -128,6 +144,7 @@ export function PdfEditorClient({
 }) {
   const t = useTranslations("pdfEditor");
   const tc = useTranslations("common");
+  const te = useTranslations("editor");
   const isMobile = useIsMobile();
   const [buffer, setBuffer] = useState<ArrayBuffer | null>(null);
   const [overlays, setOverlays] = useState<PdfOverlay[]>([]);
@@ -149,6 +166,16 @@ export function PdfEditorClient({
   const [deletePageOpen, setDeletePageOpen] = useState(false);
   const [deletingPage, setDeletingPage] = useState(false);
   const [pending, startTransition] = useTransition();
+  const [pdfExportOpen, setPdfExportOpen] = useState(false);
+  const [pdfExportPhase, setPdfExportPhase] = useState<ExportPdfPhase>("form");
+  const [pdfReadyFile, setPdfReadyFile] = useState<File | null>(null);
+  const [pdfReadyUrl, setPdfReadyUrl] = useState<string | null>(null);
+  // Read when the dialog opens: these APIs do not exist during SSR.
+  const [pdfCaps, setPdfCaps] = useState({
+    isApple: false,
+    canPickPath: false,
+    canShare: false,
+  });
   const dirtyRef = useRef(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -157,10 +184,22 @@ export function PdfEditorClient({
   const pageCountRef = useRef(1);
   const pdfHandleRef = useRef<PdfEditorHandle | null>(null);
   const dummyEditorRef = useRef(null);
+  const pdfExportBusyRef = useRef(false);
+  const pdfReadyUrlRef = useRef<string | null>(null);
+  const lastExportValuesRef = useRef<ExportPdfFormValues | null>(null);
 
   const setBufferSafe = useCallback((next: ArrayBuffer | null) => {
     bufferRef.current = next;
     setBuffer(next);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (pdfReadyUrlRef.current) {
+        revokePdfObjectUrlSoon(pdfReadyUrlRef.current);
+        pdfReadyUrlRef.current = null;
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -640,18 +679,104 @@ export function PdfEditorClient({
     }
   }
 
-  async function onDownload() {
-    setMenuOpen(false);
-    const bytes = await buildBytes();
-    if (!bytes) return;
-    const blob = new Blob([new Uint8Array(bytes)], { type: PDF_MIME });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${title}.pdf`;
-    a.click();
-    URL.revokeObjectURL(url);
+  function releasePdfReadyUrl() {
+    if (pdfReadyUrlRef.current) {
+      revokePdfObjectUrlSoon(pdfReadyUrlRef.current);
+      pdfReadyUrlRef.current = null;
+    }
+    setPdfReadyUrl(null);
+    setPdfReadyFile(null);
+  }
+
+  function closeExportDialog() {
+    releasePdfReadyUrl();
+    setPdfExportPhase("form");
+    setPdfExportOpen(false);
+    pdfExportBusyRef.current = false;
+  }
+
+  function onSavePdf() {
+    if (!pdfReadyFile) return;
+    // The File is already built, so navigator.share runs inside this tap.
+    void sharePdfFile(pdfReadyFile).then((shareResult) => {
+      if (shareResult === "shared") {
+        toast.success(t("downloadReady"));
+        closeExportDialog();
+      } else if (shareResult === "failed") {
+        toast.error(te("exportPdfShareFailed"));
+      }
+    });
+  }
+
+  function onDownloadTap() {
     toast.success(t("downloadReady"));
+    window.setTimeout(closeExportDialog, 1200);
+  }
+
+  function onDownload() {
+    setMenuOpen(false);
+    if (pdfExportBusyRef.current) return;
+    releasePdfReadyUrl();
+    setPdfCaps({
+      isApple: isAppleTouchDevice(),
+      canPickPath: hasSaveFilePicker(),
+      canShare: canSharePdfFiles(),
+    });
+    setPdfExportPhase("form");
+    setPdfExportOpen(true);
+  }
+
+  async function onExportPdfFormSubmit(values: ExportPdfFormValues) {
+    if (pdfExportBusyRef.current) return;
+    pdfExportBusyRef.current = true;
+    lastExportValuesRef.current = values;
+    setPdfExportPhase("generating");
+
+    const base = sanitizePdfBaseName(values.title);
+    try {
+      const bytes = await buildBytes();
+      if (!bytes) throw new Error("export produced no PDF");
+      const blob = new Blob([new Uint8Array(bytes)], { type: PDF_MIME });
+
+      if (values.fileHandle) {
+        await writePdfToFileHandle(values.fileHandle, blob);
+        toast.success(t("downloadReady"));
+        closeExportDialog();
+        return;
+      }
+
+      const result = await downloadPdfBlob(blob, base);
+      if (result.ok) {
+        toast.success(t("downloadReady"));
+        closeExportDialog();
+        return;
+      }
+      if (result.mode === "aborted") {
+        closeExportDialog();
+        return;
+      }
+
+      const readyFile = await materializePdfFile(result.blob, result.fileName);
+      releasePdfReadyUrl();
+      const url = createPdfObjectUrl(readyFile);
+      pdfReadyUrlRef.current = url;
+      setPdfReadyFile(readyFile);
+      setPdfReadyUrl(url);
+      setPdfExportPhase("ready");
+      pdfExportBusyRef.current = false;
+    } catch {
+      setPdfExportPhase("error");
+      pdfExportBusyRef.current = false;
+    }
+  }
+
+  function onRetryExport() {
+    const values = lastExportValuesRef.current;
+    if (!values) {
+      setPdfExportPhase("form");
+      return;
+    }
+    void onExportPdfFormSubmit(values);
   }
 
   const selected = overlays.find((o) => o.id === selectedId) || null;
@@ -1268,6 +1393,46 @@ export function PdfEditorClient({
         docKind="pdf"
         pdfRef={pdfHandleRef}
         onDocMutated={markDirty}
+      />
+
+      <ExportPdfDialog
+        open={pdfExportOpen}
+        initialName={title || "document"}
+        phase={pdfExportPhase}
+        isApple={pdfCaps.isApple}
+        canPickPath={pdfCaps.canPickPath}
+        canShare={pdfCaps.canShare}
+        readyFile={pdfReadyFile}
+        readyUrl={pdfReadyUrl}
+        labels={{
+          title: te("exportPdfFormTitle"),
+          nameLabel: te("exportPdfNameLabel"),
+          namePlaceholder: te("exportPdfNamePlaceholder"),
+          pathLabel: te("exportPdfPathLabel"),
+          pathPlaceholder: te("exportPdfPathPlaceholder"),
+          pathHintDesktop: te("exportPdfPathHintDesktop"),
+          pathHintIos: te("exportPdfPathHintIos"),
+          pickPath: te("exportPdfPickPath"),
+          submit: te("exportPdfSubmit"),
+          cancel: te("exportPdfCancel"),
+          nameRequired: te("exportPdfNameRequired"),
+          preparing: te("exportPdfPreparing"),
+          progress: te("exportPdfProgress"),
+          readyTitle: te("exportPdfReadyTitle"),
+          save: te("exportPdfSave"),
+          download: te("exportPdfDownload"),
+          fallbackHint: te("exportPdfFallbackHint"),
+          errorTitle: te("exportPdfErrorTitle"),
+          errorBody: te("exportPdfErrorBody"),
+          retry: te("exportPdfRetry"),
+        }}
+        onClose={closeExportDialog}
+        onSubmitForm={(values) => {
+          void onExportPdfFormSubmit(values);
+        }}
+        onSavePdf={onSavePdf}
+        onDownloadTap={onDownloadTap}
+        onRetry={onRetryExport}
       />
     </div>
   );
