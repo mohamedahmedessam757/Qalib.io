@@ -621,6 +621,8 @@ function paintCanvasLine(
   box: { left: number; top: number; right: number; bottom: number; height: number },
   cs: CSSStyleDeclaration,
   origin: DOMRect,
+  scaleX: number,
+  scaleY: number,
 ) {
   if (!text) return;
   const rtl = cs.direction === "rtl";
@@ -634,11 +636,11 @@ function paintCanvasLine(
   const isCenter = align === "center";
   ctx.textAlign = isCenter ? "center" : isRight ? "right" : "left";
   const x = isCenter
-    ? (box.left + box.right) / 2 - origin.left
+    ? ((box.left + box.right) / 2 - origin.left) / scaleX
     : isRight
-      ? box.right - origin.left
-      : box.left - origin.left;
-  const y = (box.top + box.bottom) / 2 - origin.top;
+      ? (box.right - origin.left) / scaleX
+      : (box.left - origin.left) / scaleX;
+  const y = ((box.top + box.bottom) / 2 - origin.top) / scaleY;
   ctx.fillText(text, x, y);
 }
 
@@ -654,16 +656,16 @@ function paintPageToCanvas(
   const visual = pageEl.getBoundingClientRect();
   const cssW = Math.max(1, Math.round(pageEl.offsetWidth || visual.width));
   const cssH = Math.max(1, Math.round(pageEl.offsetHeight || visual.height));
-  const sx = cssW / Math.max(1, visual.width);
-  const sy = cssH / Math.max(1, visual.height);
+  const scaleX = Math.max(0.01, visual.width / cssW);
+  const scaleY = Math.max(0.01, visual.height / cssH);
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(cssW * pixelRatio));
   canvas.height = Math.max(1, Math.round(cssH * pixelRatio));
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Canvas context unavailable");
-  ctx.setTransform(pixelRatio * sx, 0, 0, pixelRatio * sy, 0, 0);
+  ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
   ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, visual.width, visual.height);
+  ctx.fillRect(0, 0, cssW, cssH);
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
 
@@ -673,12 +675,12 @@ function paintPageToCanvas(
     if (cs.display === "none" || cs.visibility === "hidden") continue;
     if (Number.parseFloat(cs.opacity || "1") < 0.05) continue;
     const r = el.getBoundingClientRect();
-    const x = r.left - visual.left;
-    const y = r.top - visual.top;
-    const w = r.width;
-    const h = r.height;
+    const x = (r.left - visual.left) / scaleX;
+    const y = (r.top - visual.top) / scaleY;
+    const w = r.width / scaleX;
+    const h = r.height / scaleY;
     if (w < 0.5 || h < 0.5) continue;
-    if (x + w < 0 || y + h < 0 || x > visual.width || y > visual.height) continue;
+    if (x + w < 0 || y + h < 0 || x > cssW || y > cssH) continue;
 
     const borderW = [
       Number.parseFloat(cs.borderTopWidth) || 0,
@@ -735,10 +737,10 @@ function paintPageToCanvas(
       try {
         ctx.drawImage(
           img,
-          r.left - visual.left,
-          r.top - visual.top,
-          r.width,
-          r.height,
+          (r.left - visual.left) / scaleX,
+          (r.top - visual.top) / scaleY,
+          r.width / scaleX,
+          r.height / scaleY,
         );
       } catch {
         /* tainted image */
@@ -785,13 +787,27 @@ function paintPageToCanvas(
     const singleLine = union.height <= maxH * 1.85;
 
     if (singleLine) {
-      paintCanvasLine(ctx, raw.replace(/\s+$/g, ""), union, cs, visual);
+      paintCanvasLine(
+        ctx,
+        raw.replace(/\s+$/g, ""),
+        union,
+        cs,
+        visual,
+        scaleX,
+        scaleY,
+      );
       if (cs.textDecorationLine.includes("underline")) {
         if (applyStroke(ctx, cs.color)) {
           ctx.lineWidth = 1;
           ctx.beginPath();
-          ctx.moveTo(union.left - visual.left, union.bottom - visual.top - 1);
-          ctx.lineTo(union.right - visual.left, union.bottom - visual.top - 1);
+          ctx.moveTo(
+            (union.left - visual.left) / scaleX,
+            (union.bottom - visual.top) / scaleY - 1,
+          );
+          ctx.lineTo(
+            (union.right - visual.left) / scaleX,
+            (union.bottom - visual.top) / scaleY - 1,
+          );
           ctx.stroke();
         }
       }
@@ -809,6 +825,8 @@ function paintPageToCanvas(
         line,
         cs,
         visual,
+        scaleX,
+        scaleY,
       );
       offset = next;
     }
