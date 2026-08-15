@@ -146,23 +146,28 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
         const shell = shellRef.current;
         if (!shell) throw new Error("Editor shell not ready");
         const prevScale = viewScaleRef.current;
-        // Must paint CSS zoom:1 before html-to-image (mobile uses style.zoom).
+        const compact = compactRef.current;
+        // Must paint CSS zoom:1 before capture (mobile uses style.zoom).
         viewScaleRef.current = 1;
         flushSync(() => {
           setViewScale(1);
         });
-        // Two frames + a short pause so Eigenpal can reflow at zoom 1 before capture.
         await new Promise<void>((r) => requestAnimationFrame(() => r()));
         await new Promise<void>((r) => requestAnimationFrame(() => r()));
-        await new Promise<void>((r) => setTimeout(r, 160));
+        await new Promise<void>((r) => setTimeout(r, compact ? 80 : 160));
 
         const opts = {
           root: shell,
           title: "Qalib document",
           totalPages: editor?.getTotalPages?.() || 1,
           scrollToPage: (page: number) => editor?.scrollToPage?.(page),
-          setZoom: (z: number) => editor?.setZoom?.(z),
-          getZoom: () => editor?.getZoom?.() ?? 1,
+          // Never call Eigenpal setZoom on phones — it can freeze or abort export.
+          setZoom: compact
+            ? undefined
+            : (z: number) => editor?.setZoom?.(z),
+          getZoom: compact
+            ? undefined
+            : () => editor?.getZoom?.() ?? 1,
           onProgress: exportOpts?.onProgress,
         };
         try {

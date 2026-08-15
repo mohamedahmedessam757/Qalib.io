@@ -5,6 +5,7 @@
 import { toCanvas, toJpeg, toPng } from "html-to-image";
 import { PDFDocument } from "pdf-lib";
 import { isConstrainedCaptureDevice } from "@/lib/device";
+import { ensureNotoArabicFont } from "@/lib/pdf/arabic-canvas";
 
 /**
  * Sparse pages compress very small (especially at pixelRatio 1 on phones), so this
@@ -73,14 +74,20 @@ function findPagesRoot(root: ParentNode): HTMLElement | null {
 
 function collectPageElements(root: ParentNode): HTMLElement[] {
   const pagesEl = findPagesRoot(root) || findPagesRoot(document) || null;
+  const scope: ParentNode =
+    pagesEl ||
+    (root instanceof Element || root instanceof Document ? root : document);
 
-  const list = pagesEl
-    ? pagesEl.querySelectorAll<HTMLElement>(".layout-page")
-    : root instanceof Element
-      ? root.querySelectorAll<HTMLElement>(".layout-page")
-      : document.querySelectorAll<HTMLElement>(".layout-page");
-
-  return Array.from(list);
+  const selectors = [
+    ".layout-page",
+    ".docx-editor-page",
+    "[class*='layout-page']",
+  ];
+  for (const selector of selectors) {
+    const list = scope.querySelectorAll<HTMLElement>(selector);
+    if (list.length) return Array.from(list);
+  }
+  return [];
 }
 
 /** Decode a data: URL to bytes without fetch (works offline / CSP-safe). */
@@ -202,18 +209,23 @@ function buildCaptureOptions(
 function isMostlyBlankCanvas(canvas: HTMLCanvasElement): boolean {
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx || canvas.width < 2 || canvas.height < 2) return true;
-  const stepX = Math.max(6, Math.floor(canvas.width / 24));
-  const stepY = Math.max(6, Math.floor(canvas.height / 24));
-  let samples = 0;
-  let ink = 0;
-  for (let y = 0; y < canvas.height; y += stepY) {
-    for (let x = 0; x < canvas.width; x += stepX) {
-      const p = ctx.getImageData(x, y, 1, 1).data;
-      samples += 1;
-      if (p[0] < 248 || p[1] < 248 || p[2] < 248) ink += 1;
+  try {
+    const stepX = Math.max(6, Math.floor(canvas.width / 24));
+    const stepY = Math.max(6, Math.floor(canvas.height / 24));
+    let samples = 0;
+    let ink = 0;
+    for (let y = 0; y < canvas.height; y += stepY) {
+      for (let x = 0; x < canvas.width; x += stepX) {
+        const p = ctx.getImageData(x, y, 1, 1).data;
+        samples += 1;
+        if (p[0] < 248 || p[1] < 248 || p[2] < 248) ink += 1;
+      }
     }
+    return samples > 0 && ink / samples < 0.008;
+  } catch {
+    // Tainted canvas still has pixels; do not treat it as blank.
+    return false;
   }
-  return samples > 0 && ink / samples < 0.008;
 }
 
 function dataUrlToCanvas(dataUrl: string): Promise<HTMLCanvasElement> {
@@ -328,29 +340,406 @@ async function waitUntilPainted(pageEl: HTMLElement) {
   }
 }
 
+function isTransparentColor(color: string): boolean {
+  const c = color.trim().toLowerCase();
+  return (
+    !c ||
+    c === "transparent" ||
+    c === "rgba(0, 0, 0, 0)" ||
+    c === "rgba(0,0,0,0)" ||
+    c === "rgb(0, 0, 0, 0)"
+  );
+}
+
+function isNearWhiteFill(color: string): boolean {
+  const c = color.trim().toLowerCase();
+  if (c === "#fff" || c === "#ffffff" || c === "white") return true;
+  const rgb = c.match(/rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/);
+  if (!rgb) return false;
+  return +rgb[1] > 248 && +rgb[2] > 248 && +rgb[3] > 248;
+}
+
+function applyFill(
+  ctx: CanvasRenderingContext2D,
+  color: string,
+  fallback: string,
+): boolean {
+  if (isTransparentColor(color)) return false;
+  try {
+    ctx.fillStyle = fallback;
+    ctx.fillStyle = color;
+    return true;
+  } catch {
+    ctx.fillStyle = fallback;
+    return true;
+  }
+}
+
+function applyStroke(ctx: CanvasRenderingContext2D, color: string): boolean {
+  if (isTransparentColor(color)) return false;
+  try {
+    ctx.strokeStyle = color;
+    return true;
+  } catch {
+    ctx.strokeStyle = "#000000";
+    return true;
+  }
+}
+
+function elementClassName(el: Element): string {
+  if (typeof el.className === "string") return el.className;
+  if (el.className && typeof el.className === "object") {
+    return String(el.className);
+  }
+  return "";
+}
+
+function shouldSkipPaintEl(el: HTMLElement): boolean {
+  return /overlay|widget|resize-handle|popup|toolbar|caret|yjs-cursor|title-bar/i.test(
+    elementClassName(el),
+  );
+}
+
+function collectPaintElements(root: HTMLElement): HTMLElement[] {
+  const out: HTMLElement[] = [root];
+  const visit = (el: Element) => {
+    for (const child of el.children) {
+      if (child instanceof HTMLElement) {
+        out.push(child);
+        visit(child);
+      }
+    }
+    if (el.shadowRoot) {
+      for (const child of el.shadowRoot.children) {
+        if (child instanceof HTMLElement) {
+          out.push(child);
+          visit(child);
+        }
+      }
+    }
+  };
+  visit(root);
+  return out;
+}
+
+function walkTextNodes(root: Node, visit: (node: Text) => void) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let node: Node | null;
+  while ((node = walker.nextNode())) visit(node as Text);
+  if (root instanceof Element) {
+    if (root.shadowRoot) walkTextNodes(root.shadowRoot, visit);
+    for (const el of root.querySelectorAll("*")) {
+      if (el.shadowRoot) walkTextNodes(el.shadowRoot, visit);
+    }
+  }
+}
+
+function canvasToDataUrl(canvas: HTMLCanvasElement): string {
+  try {
+    const png = canvas.toDataURL("image/png");
+    if (png.startsWith("data:image/png") && png.length > 80) return png;
+  } catch {
+    /* tainted */
+  }
+  try {
+    const jpeg = canvas.toDataURL("image/jpeg", 0.92);
+    if (
+      (jpeg.startsWith("data:image/jpeg") || jpeg.startsWith("data:image/jpg")) &&
+      jpeg.length > 80
+    ) {
+      return jpeg;
+    }
+  } catch {
+    /* tainted */
+  }
+  throw new Error("Canvas encode failed");
+}
+
+function exportPixelRatio(visualW: number, visualH: number): number {
+  const dpr = Math.min(2, typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1);
+  const maxEdge = 2048;
+  return Math.max(
+    1,
+    Math.min(dpr, maxEdge / Math.max(visualW, 1), maxEdge / Math.max(visualH, 1)),
+  );
+}
+
+/**
+ * Paint a live editor page onto a canvas using layout boxes and text ranges.
+ * Avoids SVG foreignObject, so Tailwind oklch / color-mix cannot abort export.
+ */
+function paintPageToCanvas(
+  pageEl: HTMLElement,
+  pixelRatio: number,
+  drawImages: boolean,
+): HTMLCanvasElement {
+  const root = pageEl.getBoundingClientRect();
+  const width = Math.max(1, Math.round(root.width || pageEl.offsetWidth));
+  const height = Math.max(1, Math.round(root.height || pageEl.offsetHeight));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(width * pixelRatio));
+  canvas.height = Math.max(1, Math.round(height * pixelRatio));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas context unavailable");
+  ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, width, height);
+  ctx.imageSmoothingEnabled = true;
+
+  for (const el of collectPaintElements(pageEl)) {
+    if (el !== pageEl && shouldSkipPaintEl(el)) continue;
+    const cs = getComputedStyle(el);
+    if (cs.display === "none" || cs.visibility === "hidden") continue;
+    if (Number.parseFloat(cs.opacity || "1") < 0.05) continue;
+    const r = el.getBoundingClientRect();
+    const x = r.left - root.left;
+    const y = r.top - root.top;
+    const w = r.width;
+    const h = r.height;
+    if (w < 0.5 || h < 0.5) continue;
+    if (x + w < 0 || y + h < 0 || x > width || y > height) continue;
+
+    if (applyFill(ctx, cs.backgroundColor, "#ffffff")) {
+      if (!isNearWhiteFill(String(ctx.fillStyle))) {
+        ctx.fillRect(x, y, w, h);
+      }
+    }
+
+    const sides: Array<[number, string, number, number, number, number]> = [
+      [
+        Number.parseFloat(cs.borderTopWidth) || 0,
+        cs.borderTopColor,
+        x,
+        y + 0.5,
+        x + w,
+        y + 0.5,
+      ],
+      [
+        Number.parseFloat(cs.borderRightWidth) || 0,
+        cs.borderRightColor,
+        x + w - 0.5,
+        y,
+        x + w - 0.5,
+        y + h,
+      ],
+      [
+        Number.parseFloat(cs.borderBottomWidth) || 0,
+        cs.borderBottomColor,
+        x,
+        y + h - 0.5,
+        x + w,
+        y + h - 0.5,
+      ],
+      [
+        Number.parseFloat(cs.borderLeftWidth) || 0,
+        cs.borderLeftColor,
+        x + 0.5,
+        y,
+        x + 0.5,
+        y + h,
+      ],
+    ];
+    for (const [bw, color, x1, y1, x2, y2] of sides) {
+      if (bw < 0.4) continue;
+      if (!applyStroke(ctx, color)) continue;
+      ctx.lineWidth = Math.max(1, bw);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+    }
+  }
+
+  if (drawImages) {
+    for (const img of pageEl.querySelectorAll("img")) {
+      if (!(img instanceof HTMLImageElement) || !img.naturalWidth) continue;
+      const r = img.getBoundingClientRect();
+      try {
+        ctx.drawImage(
+          img,
+          r.left - root.left,
+          r.top - root.top,
+          r.width,
+          r.height,
+        );
+      } catch {
+        /* tainted image */
+      }
+    }
+  }
+
+  walkTextNodes(pageEl, (textNode) => {
+    const raw = textNode.nodeValue ?? "";
+    if (!raw.replace(/\s+/g, "")) return;
+    const parent = textNode.parentElement;
+    if (!parent || shouldSkipPaintEl(parent)) return;
+    const cs = getComputedStyle(parent);
+    if (cs.display === "none" || cs.visibility === "hidden") return;
+    applyFill(ctx, cs.color, "#111111");
+    if (isNearWhiteFill(String(ctx.fillStyle))) {
+      ctx.fillStyle = "#111111";
+    }
+
+    const fontSize = cs.fontSize || "14px";
+    const fontFamily =
+      cs.fontFamily ||
+      '"NotoSansArabic","Noto Sans Arabic","Segoe UI",Tahoma,Arial,sans-serif';
+    ctx.font = `${cs.fontStyle || "normal"} ${cs.fontWeight || "400"} ${fontSize} ${fontFamily}`;
+    ctx.textBaseline = "alphabetic";
+    const rtl = cs.direction === "rtl";
+    ctx.direction = rtl ? "rtl" : "ltr";
+    ctx.textAlign = rtl ? "right" : "left";
+
+    const range = document.createRange();
+    try {
+      range.selectNodeContents(textNode);
+    } catch {
+      return;
+    }
+    const rects = Array.from(range.getClientRects());
+    if (!rects.length) return;
+
+    if (rects.length === 1) {
+      const r = rects[0]!;
+      const x = rtl ? r.right - root.left : r.left - root.left;
+      const y = r.bottom - root.top - 2;
+      ctx.fillText(raw.replace(/\s+$/g, ""), x, y, Math.max(1, r.width));
+      return;
+    }
+
+    let start = 0;
+    for (const r of rects) {
+      if (start >= raw.length) break;
+      let end = start;
+      while (end < raw.length) {
+        const trial = raw.slice(start, end + 1);
+        if (ctx.measureText(trial).width > r.width + 2 && end > start) break;
+        end += 1;
+      }
+      if (end === start) end = Math.min(raw.length, start + 1);
+      const line = raw.slice(start, end);
+      start = end;
+      const x = rtl ? r.right - root.left : r.left - root.left;
+      const y = r.bottom - root.top - 2;
+      ctx.fillText(line.replace(/\s+$/g, ""), x, y, Math.max(1, r.width));
+    }
+  });
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  return canvas;
+}
+
+function wrapFallbackLines(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+): string[] {
+  const out: string[] = [];
+  for (const para of text.split(/\n/)) {
+    const words = para.split(/\s+/).filter(Boolean);
+    if (!words.length) {
+      out.push("");
+      continue;
+    }
+    let line = words[0]!;
+    for (let i = 1; i < words.length; i += 1) {
+      const next = `${line} ${words[i]}`;
+      if (ctx.measureText(next).width <= maxWidth) {
+        line = next;
+      } else {
+        out.push(line);
+        line = words[i]!;
+      }
+    }
+    out.push(line);
+  }
+  return out;
+}
+
+function fallbackTextPng(pageEl: HTMLElement): string {
+  const root = pageEl.getBoundingClientRect();
+  const width = Math.max(320, Math.round(root.width || pageEl.offsetWidth || 816));
+  const height = Math.max(400, Math.round(root.height || pageEl.offsetHeight || 1056));
+  const canvas = document.createElement("canvas");
+  const pr = exportPixelRatio(width, height);
+  canvas.width = Math.round(width * pr);
+  canvas.height = Math.round(height * pr);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas context unavailable");
+  ctx.setTransform(pr, 0, 0, pr, 0, 0);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, width, height);
+  ctx.fillStyle = "#111111";
+  ctx.font =
+    '15px "NotoSansArabic","Noto Sans Arabic","Segoe UI",Tahoma,Arial,sans-serif';
+  ctx.textBaseline = "top";
+  const rtl =
+    getComputedStyle(pageEl).direction === "rtl" ||
+    pageEl.closest("[dir='rtl']") !== null;
+  ctx.direction = rtl ? "rtl" : "ltr";
+  ctx.textAlign = rtl ? "right" : "left";
+  const pad = 36;
+  const text = (pageEl.innerText || "").replace(/\n{3,}/g, "\n\n").trim();
+  const lines = wrapFallbackLines(ctx, text || " ", width - pad * 2);
+  let y = pad;
+  const x = rtl ? width - pad : pad;
+  for (const line of lines) {
+    if (y > height - pad) break;
+    ctx.fillText(line, x, y, width - pad * 2);
+    y += 22;
+  }
+  return canvasToDataUrl(canvas);
+}
+
+function paintPageToPng(pageEl: HTMLElement): string {
+  const root = pageEl.getBoundingClientRect();
+  const pr = exportPixelRatio(
+    root.width || pageEl.offsetWidth,
+    root.height || pageEl.offsetHeight,
+  );
+  try {
+    const withImages = paintPageToCanvas(pageEl, pr, true);
+    const url = canvasToDataUrl(withImages);
+    if (!isMostlyBlankCanvas(withImages)) return url;
+  } catch {
+    /* tainted or encode failure — retry without images */
+  }
+  const noImages = paintPageToCanvas(pageEl, pr, false);
+  const url = canvasToDataUrl(noImages);
+  if (!isMostlyBlankCanvas(noImages)) return url;
+  throw new Error("DOM paint was blank");
+}
+
 async function capturePageImage(pageEl: HTMLElement): Promise<string> {
   await waitUntilPainted(pageEl);
   const width = Math.max(1, pageEl.scrollWidth || pageEl.offsetWidth);
   const height = Math.max(1, pageEl.scrollHeight || pageEl.offsetHeight);
-  const profiles = captureProfiles(isConstrainedCaptureDevice());
+  const constrained = isConstrainedCaptureDevice();
 
-  let lastError: unknown;
-  for (const profile of profiles) {
-    try {
-      if (profile.flatten) {
-        return await withFlattenedClone(pageEl, width, height, (clone) =>
-          rasterizeNode(clone, profile, width, height),
-        );
+  try {
+    return paintPageToPng(pageEl);
+  } catch {
+    /* continue */
+  }
+
+  // html-to-image uses SVG foreignObject and often dies on mobile (oklch / color-mix).
+  if (!constrained) {
+    const profiles = captureProfiles(false);
+    for (const profile of profiles) {
+      try {
+        if (profile.flatten) {
+          return await withFlattenedClone(pageEl, width, height, (clone) =>
+            rasterizeNode(clone, profile, width, height),
+          );
+        }
+        return await rasterizeNode(pageEl, profile, width, height);
+      } catch {
+        /* next profile */
       }
-      return await rasterizeNode(pageEl, profile, width, height);
-    } catch (err) {
-      lastError = err;
     }
   }
 
-  throw lastError instanceof Error
-    ? lastError
-    : new Error("Failed to capture document page");
+  return fallbackTextPng(pageEl);
 }
 
 async function embedRaster(pdf: PDFDocument, dataUrl: string) {
@@ -359,8 +748,32 @@ async function embedRaster(pdf: PDFDocument, dataUrl: string) {
   return pdf.embedPng(bytes);
 }
 
+function pdfPageSize(pageEl: HTMLElement): { w: number; h: number } {
+  const visual = pageEl.getBoundingClientRect();
+  const w = Math.max(1, pageEl.offsetWidth || visual.width);
+  const h = Math.max(1, pageEl.offsetHeight || visual.height);
+  if (w < 600) {
+    const scale = 816 / w;
+    return { w: 816, h: Math.max(1, Math.round(h * scale)) };
+  }
+  return { w, h };
+}
+
+function collectExportTargets(root: ParentNode): HTMLElement[] {
+  const pages = collectPageElements(root);
+  if (pages.length) return pages;
+  const pagesRoot = findPagesRoot(root) || findPagesRoot(document);
+  if (pagesRoot && (pagesRoot.offsetWidth > 40 || pagesRoot.scrollHeight > 40)) {
+    return [pagesRoot];
+  }
+  if (root instanceof HTMLElement && root.innerText.trim()) return [root];
+  const ep = document.querySelector<HTMLElement>(".ep-root .ProseMirror");
+  if (ep) return [ep];
+  return [];
+}
+
 /**
- * Capture each .layout-page as a raster image and assemble a PDF via pdf-lib.
+ * Capture each document page as a raster image and assemble a PDF via pdf-lib.
  * Does not call window.print().
  */
 export async function exportDocxPagesToPdfBlob(
@@ -370,48 +783,79 @@ export async function exportDocxPagesToPdfBlob(
   const constrained = isConstrainedCaptureDevice();
 
   try {
-    opts.setZoom?.(1);
-    await nextFrame();
-    await nextFrame();
-    await pause(constrained ? 280 : 80);
-    await revealAllPages(opts.root, opts.scrollToPage, opts.totalPages);
+    try {
+      await ensureNotoArabicFont();
 
-    const pages = collectPageElements(opts.root);
-    if (!pages.length) {
-      throw new Error("No document pages found to export");
-    }
-
-    const pdf = await PDFDocument.create();
-
-    for (let i = 0; i < pages.length; i += 1) {
-      const pageEl = pages[i]!;
-      opts.onProgress?.(i + 1, pages.length);
-
-      try {
-        pageEl.scrollIntoView({ block: "nearest", inline: "nearest" });
-      } catch {
-        /* ignore */
+      // Eigenpal setZoom on phones is expensive and can abort the export.
+      // Capture the live layout instead (CSS zoom is already reset by the editor).
+      if (!constrained) {
+        opts.setZoom?.(1);
+        await nextFrame();
+        await nextFrame();
+        await pause(80);
+      } else {
+        await nextFrame();
+        await pause(80);
       }
-      await nextFrame();
+      await revealAllPages(opts.root, opts.scrollToPage, opts.totalPages);
 
-      const cssW = Math.max(1, pageEl.offsetWidth || pageEl.scrollWidth);
-      const cssH = Math.max(1, pageEl.offsetHeight || pageEl.scrollHeight);
+      const pages = collectExportTargets(opts.root);
+      if (!pages.length) {
+        throw new Error("No document pages found to export");
+      }
 
-      const dataUrl = await capturePageImage(pageEl);
+      const pdf = await PDFDocument.create();
+
+      for (let i = 0; i < pages.length; i += 1) {
+        const pageEl = pages[i]!;
+        opts.onProgress?.(i + 1, pages.length);
+
+        try {
+          pageEl.scrollIntoView({ block: "nearest", inline: "nearest" });
+        } catch {
+          /* ignore */
+        }
+        await nextFrame();
+
+        const { w: cssW, h: cssH } = pdfPageSize(pageEl);
+        let dataUrl: string;
+        try {
+          dataUrl = await capturePageImage(pageEl);
+        } catch {
+          dataUrl = fallbackTextPng(pageEl);
+        }
+        const img = await embedRaster(pdf, dataUrl);
+        const page = pdf.addPage([cssW, cssH]);
+        page.drawImage(img, {
+          x: 0,
+          y: 0,
+          width: cssW,
+          height: cssH,
+        });
+      }
+
+      const bytes = await pdf.save();
+      return new Blob([new Uint8Array(bytes)], { type: "application/pdf" });
+    } catch {
+      const host =
+        opts.root instanceof HTMLElement
+          ? opts.root
+          : document.querySelector<HTMLElement>(".docx-shell") || document.body;
+      const pdf = await PDFDocument.create();
+      const dataUrl = fallbackTextPng(host);
       const img = await embedRaster(pdf, dataUrl);
-      const page = pdf.addPage([cssW, cssH]);
+      const page = pdf.addPage([816, 1056]);
       page.drawImage(img, {
         x: 0,
         y: 0,
-        width: cssW,
-        height: cssH,
+        width: 816,
+        height: 1056,
       });
+      const bytes = await pdf.save();
+      return new Blob([new Uint8Array(bytes)], { type: "application/pdf" });
     }
-
-    const bytes = await pdf.save();
-    return new Blob([new Uint8Array(bytes)], { type: "application/pdf" });
   } finally {
-    if (typeof prevZoom === "number") {
+    if (!constrained && typeof prevZoom === "number") {
       opts.setZoom?.(prevZoom);
     }
   }
