@@ -161,13 +161,8 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
           title: "Qalib document",
           totalPages: editor?.getTotalPages?.() || 1,
           scrollToPage: (page: number) => editor?.scrollToPage?.(page),
-          // Never call Eigenpal setZoom on phones — it can freeze or abort export.
-          setZoom: compact
-            ? undefined
-            : (z: number) => editor?.setZoom?.(z),
-          getZoom: compact
-            ? undefined
-            : () => editor?.getZoom?.() ?? 1,
+          setZoom: (z: number) => editor?.setZoom?.(z),
+          getZoom: () => editor?.getZoom?.() ?? 1,
           onProgress: exportOpts?.onProgress,
         };
         try {

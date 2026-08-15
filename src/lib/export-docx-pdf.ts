@@ -134,20 +134,72 @@ type CaptureProfile = {
 function captureProfiles(constrained: boolean): CaptureProfile[] {
   if (constrained) {
     return [
-      { skipFonts: true, pixelRatio: 1, flatten: true, jpeg: false },
+      { skipFonts: true, pixelRatio: 2, flatten: false, jpeg: false },
       { skipFonts: true, pixelRatio: 1, flatten: false, jpeg: false },
+      { skipFonts: true, pixelRatio: 1, flatten: true, jpeg: false },
       { skipFonts: true, pixelRatio: 1, flatten: true, jpeg: true },
     ];
   }
   return [
     { skipFonts: false, pixelRatio: 2, flatten: false, jpeg: false },
-    { skipFonts: true, pixelRatio: 1, flatten: true, jpeg: false },
+    { skipFonts: true, pixelRatio: 2, flatten: false, jpeg: false },
+    { skipFonts: true, pixelRatio: 2, flatten: true, jpeg: false },
   ];
 }
 
 function captureFilter(node: HTMLElement): boolean {
   const tag = node.tagName;
-  return tag !== "SCRIPT" && tag !== "IFRAME" && tag !== "VIDEO";
+  if (tag === "SCRIPT" || tag === "IFRAME" || tag === "VIDEO") return false;
+  const cls =
+    typeof node.className === "string"
+      ? node.className
+      : node.className
+        ? String(node.className)
+        : "";
+  return !/overlay|widget|resize-handle|popup|toolbar|caret|yjs-cursor/i.test(
+    cls,
+  );
+}
+
+let colorProbeCtx: CanvasRenderingContext2D | null | undefined;
+
+function cssColorToRgb(value: string, fallback: string): string {
+  const raw = value.trim();
+  if (!raw || raw === "transparent") return raw || fallback;
+  if (
+    !/(oklch|oklab|color-mix|color\(|lch\(|lab\(|hwb\(|light-dark)/i.test(raw)
+  ) {
+    return raw;
+  }
+  try {
+    if (colorProbeCtx === undefined) {
+      colorProbeCtx = document.createElement("canvas").getContext("2d");
+    }
+    if (!colorProbeCtx) return fallback;
+    colorProbeCtx.fillStyle = fallback;
+    colorProbeCtx.fillStyle = raw;
+    return String(colorProbeCtx.fillStyle || fallback);
+  } catch {
+    return fallback;
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      reject(new Error("Page capture timed out"));
+    }, ms);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        window.clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
 }
 
 const SKIP_STYLE =
@@ -160,11 +212,11 @@ function inlineComputedTree(src: Element, dst: Element) {
       const prop = cs.item(i);
       if (!prop || prop.startsWith("--") || SKIP_STYLE.test(prop)) continue;
       try {
-        dst.style.setProperty(
-          prop,
-          cs.getPropertyValue(prop),
-          cs.getPropertyPriority(prop),
-        );
+        let value = cs.getPropertyValue(prop);
+        if (/(^|-)color$|^fill$|^stroke$|background$/.test(prop)) {
+          value = cssColorToRgb(value, value);
+        }
+        dst.style.setProperty(prop, value, cs.getPropertyPriority(prop));
       } catch {
         /* some computed props cannot be written */
       }
@@ -173,7 +225,16 @@ function inlineComputedTree(src: Element, dst: Element) {
     dst.style.setProperty("transform", "none");
     dst.style.setProperty("filter", "none");
     dst.style.setProperty("box-shadow", "none");
-    dst.style.setProperty("background-image", dst.style.backgroundImage);
+    dst.style.setProperty(
+      "color",
+      cssColorToRgb(cs.color, "#111111"),
+    );
+    dst.style.setProperty(
+      "background-color",
+      isTransparentColor(cs.backgroundColor)
+        ? "#ffffff"
+        : cssColorToRgb(cs.backgroundColor, "#ffffff"),
+    );
   }
   const srcKids = src.children;
   const dstKids = dst.children;
@@ -181,6 +242,28 @@ function inlineComputedTree(src: Element, dst: Element) {
   for (let i = 0; i < n; i += 1) {
     inlineComputedTree(srcKids[i]!, dstKids[i]!);
   }
+}
+
+function inlineResolvedColors(root: HTMLElement): () => void {
+  const saved: Array<{ el: HTMLElement; css: string }> = [];
+  const els = [root, ...Array.from(root.querySelectorAll<HTMLElement>("*"))];
+  for (const el of els) {
+    saved.push({ el, css: el.style.cssText });
+    const cs = getComputedStyle(el);
+    el.style.color = cssColorToRgb(cs.color, "#111111");
+    el.style.backgroundColor = isTransparentColor(cs.backgroundColor)
+      ? "transparent"
+      : cssColorToRgb(cs.backgroundColor, "#ffffff");
+    el.style.borderTopColor = cssColorToRgb(cs.borderTopColor, "#000000");
+    el.style.borderRightColor = cssColorToRgb(cs.borderRightColor, "#000000");
+    el.style.borderBottomColor = cssColorToRgb(cs.borderBottomColor, "#000000");
+    el.style.borderLeftColor = cssColorToRgb(cs.borderLeftColor, "#000000");
+    el.style.outlineColor = cssColorToRgb(cs.outlineColor, "transparent");
+    el.style.filter = "none";
+  }
+  return () => {
+    for (const item of saved) item.el.style.cssText = item.css;
+  };
 }
 
 function buildCaptureOptions(
@@ -265,20 +348,24 @@ async function rasterizeNode(
   height: number,
 ): Promise<string> {
   const opts = buildCaptureOptions(width, height, profile);
+  const budget = isConstrainedCaptureDevice() ? 8000 : 20000;
   if (profile.jpeg) {
-    const dataUrl = await toJpeg(node, { ...opts, quality: 0.92 });
+    const dataUrl = await withTimeout(
+      toJpeg(node, { ...opts, quality: 0.92 }),
+      budget,
+    );
     if (!isJpegDataUrl(dataUrl) || !looksComplete(dataUrl)) {
       throw new Error("JPEG capture was empty");
     }
     return assertNotBlank(dataUrl);
   }
   try {
-    const dataUrl = await toPng(node, opts);
+    const dataUrl = await withTimeout(toPng(node, opts), budget);
     if (isPngDataUrl(dataUrl)) return await assertNotBlank(dataUrl);
   } catch {
     /* fall through to canvas */
   }
-  const canvas = await toCanvas(node, opts);
+  const canvas = await withTimeout(toCanvas(node, opts), budget);
   if (isMostlyBlankCanvas(canvas)) {
     throw new Error("Canvas capture was blank");
   }
@@ -302,13 +389,13 @@ async function withFlattenedClone<T>(
     "position:fixed",
     "left:0",
     "top:0",
-    "z-index:2147483646",
+    "z-index:2147483645",
     `width:${width}px`,
     `height:${height}px`,
     "overflow:visible",
     "background:#ffffff",
     "pointer-events:none",
-    "opacity:0.02",
+    "opacity:1",
   ].join(";");
   const clone = pageEl.cloneNode(true) as HTMLElement;
   inlineComputedTree(pageEl, clone);
@@ -464,6 +551,95 @@ function exportPixelRatio(visualW: number, visualH: number): number {
   );
 }
 
+function unionClientRects(rects: Array<DOMRect | { left: number; top: number; right: number; bottom: number }>) {
+  let left = Infinity;
+  let top = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  for (const r of rects) {
+    left = Math.min(left, r.left);
+    top = Math.min(top, r.top);
+    right = Math.max(right, r.right);
+    bottom = Math.max(bottom, r.bottom);
+  }
+  return { left, top, right, bottom, width: right - left, height: bottom - top };
+}
+
+function groupClientRectsByLine(rects: DOMRect[]) {
+  const sorted = [...rects].sort((a, b) => a.top - b.top || a.left - b.left);
+  const lines: DOMRect[][] = [];
+  for (const r of sorted) {
+    const last = lines[lines.length - 1];
+    if (last) {
+      const box = unionClientRects(last);
+      const sameLine = Math.abs(r.top - box.top) < Math.max(3, box.height * 0.55);
+      if (sameLine) {
+        last.push(r);
+        continue;
+      }
+    }
+    lines.push([r]);
+  }
+  return lines.map((line) => unionClientRects(line));
+}
+
+function lineEndOffset(
+  node: Text,
+  raw: string,
+  start: number,
+  line: { top: number; bottom: number },
+): number {
+  const range = document.createRange();
+  let lo = start + 1;
+  let hi = raw.length;
+  let best = Math.min(raw.length, start + 1);
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    try {
+      range.setStart(node, start);
+      range.setEnd(node, mid);
+    } catch {
+      break;
+    }
+    const overflow = Array.from(range.getClientRects()).some(
+      (r) => r.top > line.bottom - 1,
+    );
+    if (overflow) hi = mid - 1;
+    else {
+      best = mid;
+      lo = mid + 1;
+    }
+  }
+  return Math.max(best, start + 1);
+}
+
+function paintCanvasLine(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  box: { left: number; top: number; right: number; bottom: number; height: number },
+  cs: CSSStyleDeclaration,
+  origin: DOMRect,
+) {
+  if (!text) return;
+  const rtl = cs.direction === "rtl";
+  const align = cs.textAlign;
+  ctx.direction = rtl ? "rtl" : "ltr";
+  ctx.textBaseline = "alphabetic";
+  const isRight =
+    align === "right" ||
+    (align === "end" && !rtl) ||
+    (align === "start" && rtl);
+  const isCenter = align === "center";
+  ctx.textAlign = isCenter ? "center" : isRight ? "right" : "left";
+  const x = isCenter
+    ? (box.left + box.right) / 2 - origin.left
+    : isRight
+      ? box.right - origin.left
+      : box.left - origin.left;
+  const y = box.top - origin.top + box.height * 0.78;
+  ctx.fillText(text, x, y);
+}
+
 /**
  * Paint a live editor page onto a canvas using layout boxes and text ranges.
  * Avoids SVG foreignObject, so Tailwind oklch / color-mix cannot abort export.
@@ -499,11 +675,21 @@ function paintPageToCanvas(
     if (w < 0.5 || h < 0.5) continue;
     if (x + w < 0 || y + h < 0 || x > width || y > height) continue;
 
+    const display = cs.display;
+    const paintChrome =
+      el === pageEl ||
+      display.includes("table") ||
+      /layout-page|layout-table|layout-cell|layout-block/.test(
+        elementClassName(el),
+      );
+
     if (applyFill(ctx, cs.backgroundColor, "#ffffff")) {
       if (!isNearWhiteFill(String(ctx.fillStyle))) {
         ctx.fillRect(x, y, w, h);
       }
     }
+
+    if (!paintChrome) continue;
 
     const sides: Array<[number, string, number, number, number, number]> = [
       [
@@ -585,10 +771,6 @@ function paintPageToCanvas(
       cs.fontFamily ||
       '"NotoSansArabic","Noto Sans Arabic","Segoe UI",Tahoma,Arial,sans-serif';
     ctx.font = `${cs.fontStyle || "normal"} ${cs.fontWeight || "400"} ${fontSize} ${fontFamily}`;
-    ctx.textBaseline = "alphabetic";
-    const rtl = cs.direction === "rtl";
-    ctx.direction = rtl ? "rtl" : "ltr";
-    ctx.textAlign = rtl ? "right" : "left";
 
     const range = document.createRange();
     try {
@@ -596,32 +778,29 @@ function paintPageToCanvas(
     } catch {
       return;
     }
-    const rects = Array.from(range.getClientRects());
+    const rects = Array.from(range.getClientRects()).filter(
+      (r) => r.width >= 0.5 && r.height >= 0.5,
+    );
     if (!rects.length) return;
 
-    if (rects.length === 1) {
-      const r = rects[0]!;
-      const x = rtl ? r.right - root.left : r.left - root.left;
-      const y = r.bottom - root.top - 2;
-      ctx.fillText(raw.replace(/\s+$/g, ""), x, y, Math.max(1, r.width));
+    const lines = groupClientRectsByLine(rects);
+    if (lines.length === 1) {
+      paintCanvasLine(ctx, raw.replace(/\s+$/g, ""), lines[0]!, cs, root);
       return;
     }
 
-    let start = 0;
-    for (const r of rects) {
-      if (start >= raw.length) break;
-      let end = start;
-      while (end < raw.length) {
-        const trial = raw.slice(start, end + 1);
-        if (ctx.measureText(trial).width > r.width + 2 && end > start) break;
-        end += 1;
-      }
-      if (end === start) end = Math.min(raw.length, start + 1);
-      const line = raw.slice(start, end);
-      start = end;
-      const x = rtl ? r.right - root.left : r.left - root.left;
-      const y = r.bottom - root.top - 2;
-      ctx.fillText(line.replace(/\s+$/g, ""), x, y, Math.max(1, r.width));
+    let offset = 0;
+    for (const line of lines) {
+      if (offset >= raw.length) break;
+      const next = lineEndOffset(textNode, raw, offset, line);
+      paintCanvasLine(
+        ctx,
+        raw.slice(offset, next).replace(/\s+$/g, ""),
+        line,
+        cs,
+        root,
+      );
+      offset = next;
     }
   });
 
@@ -715,31 +894,37 @@ async function capturePageImage(pageEl: HTMLElement): Promise<string> {
   const width = Math.max(1, pageEl.scrollWidth || pageEl.offsetWidth);
   const height = Math.max(1, pageEl.scrollHeight || pageEl.offsetHeight);
   const constrained = isConstrainedCaptureDevice();
+  const restoreColors = inlineResolvedColors(pageEl);
 
   try {
-    return paintPageToPng(pageEl);
-  } catch {
-    /* continue */
-  }
-
-  // html-to-image uses SVG foreignObject and often dies on mobile (oklch / color-mix).
-  if (!constrained) {
-    const profiles = captureProfiles(false);
+    const profiles = captureProfiles(constrained);
     for (const profile of profiles) {
       try {
         if (profile.flatten) {
-          return await withFlattenedClone(pageEl, width, height, (clone) =>
-            rasterizeNode(clone, profile, width, height),
+          const dataUrl = await withFlattenedClone(
+            pageEl,
+            width,
+            height,
+            (clone) => rasterizeNode(clone, profile, width, height),
           );
+          if (dataUrl) return dataUrl;
+        } else {
+          const dataUrl = await rasterizeNode(pageEl, profile, width, height);
+          if (dataUrl) return dataUrl;
         }
-        return await rasterizeNode(pageEl, profile, width, height);
       } catch {
         /* next profile */
       }
     }
+  } finally {
+    restoreColors();
   }
 
-  return fallbackTextPng(pageEl);
+  try {
+    return paintPageToPng(pageEl);
+  } catch {
+    return fallbackTextPng(pageEl);
+  }
 }
 
 async function embedRaster(pdf: PDFDocument, dataUrl: string) {
@@ -786,17 +971,14 @@ export async function exportDocxPagesToPdfBlob(
     try {
       await ensureNotoArabicFont();
 
-      // Eigenpal setZoom on phones is expensive and can abort the export.
-      // Capture the live layout instead (CSS zoom is already reset by the editor).
-      if (!constrained) {
+      try {
         opts.setZoom?.(1);
-        await nextFrame();
-        await nextFrame();
-        await pause(80);
-      } else {
-        await nextFrame();
-        await pause(80);
+      } catch {
+        /* zoom restore is best-effort */
       }
+      await nextFrame();
+      await nextFrame();
+      await pause(constrained ? 420 : 80);
       await revealAllPages(opts.root, opts.scrollToPage, opts.totalPages);
 
       const pages = collectExportTargets(opts.root);
@@ -855,7 +1037,7 @@ export async function exportDocxPagesToPdfBlob(
       return new Blob([new Uint8Array(bytes)], { type: "application/pdf" });
     }
   } finally {
-    if (!constrained && typeof prevZoom === "number") {
+    if (typeof prevZoom === "number") {
       opts.setZoom?.(prevZoom);
     }
   }
