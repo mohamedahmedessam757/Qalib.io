@@ -23,6 +23,8 @@ export type ExportDocxPdfOptions = {
   scrollToPage?: (page: number) => void;
   setZoom?: (z: number) => void;
   getZoom?: () => number;
+  /** Document page width in CSS px (Eigenpal layout). */
+  getPageWidth?: () => number;
   onProgress?: (current: number, total: number) => void;
 };
 
@@ -134,15 +136,18 @@ type CaptureProfile = {
 function captureProfiles(constrained: boolean): CaptureProfile[] {
   if (constrained) {
     return [
+      { skipFonts: false, pixelRatio: 2, flatten: false, jpeg: false },
       { skipFonts: true, pixelRatio: 2, flatten: false, jpeg: false },
       { skipFonts: true, pixelRatio: 1, flatten: false, jpeg: false },
-      { skipFonts: true, pixelRatio: 1, flatten: true, jpeg: false },
+      { skipFonts: false, pixelRatio: 2, flatten: true, jpeg: false },
+      { skipFonts: true, pixelRatio: 2, flatten: true, jpeg: false },
       { skipFonts: true, pixelRatio: 1, flatten: true, jpeg: true },
     ];
   }
   return [
     { skipFonts: false, pixelRatio: 2, flatten: false, jpeg: false },
     { skipFonts: true, pixelRatio: 2, flatten: false, jpeg: false },
+    { skipFonts: false, pixelRatio: 2, flatten: true, jpeg: false },
     { skipFonts: true, pixelRatio: 2, flatten: true, jpeg: false },
   ];
 }
@@ -333,14 +338,6 @@ function dataUrlToCanvas(dataUrl: string): Promise<HTMLCanvasElement> {
   });
 }
 
-async function assertNotBlank(dataUrl: string): Promise<string> {
-  const canvas = await dataUrlToCanvas(dataUrl);
-  if (isMostlyBlankCanvas(canvas)) {
-    throw new Error("Captured page was blank");
-  }
-  return dataUrl;
-}
-
 async function rasterizeNode(
   node: HTMLElement,
   profile: CaptureProfile,
@@ -348,20 +345,20 @@ async function rasterizeNode(
   height: number,
 ): Promise<string> {
   const opts = buildCaptureOptions(width, height, profile);
-  const budget = isConstrainedCaptureDevice() ? 8000 : 20000;
+  const budget = isConstrainedCaptureDevice() ? 25000 : 20000;
   if (profile.jpeg) {
     const dataUrl = await withTimeout(
-      toJpeg(node, { ...opts, quality: 0.92 }),
+      toJpeg(node, { ...opts, quality: 0.94 }),
       budget,
     );
     if (!isJpegDataUrl(dataUrl) || !looksComplete(dataUrl)) {
       throw new Error("JPEG capture was empty");
     }
-    return assertNotBlank(dataUrl);
+    return dataUrl;
   }
   try {
     const dataUrl = await withTimeout(toPng(node, opts), budget);
-    if (isPngDataUrl(dataUrl)) return await assertNotBlank(dataUrl);
+    if (isPngDataUrl(dataUrl) && looksComplete(dataUrl)) return dataUrl;
   } catch {
     /* fall through to canvas */
   }
@@ -369,45 +366,138 @@ async function rasterizeNode(
   if (isMostlyBlankCanvas(canvas)) {
     throw new Error("Canvas capture was blank");
   }
-  return canvas.toDataURL("image/png");
+  const dataUrl = canvas.toDataURL("image/png");
+  if (!looksComplete(dataUrl)) {
+    throw new Error("PNG capture was empty");
+  }
+  return dataUrl;
+}
+
+function copyCssVariables(from: Element, to: HTMLElement) {
+  const cs = getComputedStyle(from);
+  for (let i = 0; i < cs.length; i += 1) {
+    const prop = cs.item(i);
+    if (prop?.startsWith("--")) {
+      to.style.setProperty(prop, cs.getPropertyValue(prop));
+    }
+  }
+}
+
+function resolveExportShell(root: ParentNode): HTMLElement | null {
+  if (root instanceof HTMLElement && root.classList.contains("docx-shell")) {
+    return root;
+  }
+  if (root instanceof Element) {
+    return root.querySelector<HTMLElement>(".docx-shell");
+  }
+  return document.querySelector<HTMLElement>(".docx-shell");
 }
 
 /**
- * Clone the live page with resolved computed styles so CSS variables, oklch,
- * and color-mix from Tailwind / Eigenpal cannot render as transparent text.
- * Capturing a raw clone outside `.ep-root` produced empty white PDFs.
+ * Phones fit pages to ~390px; Word pages are ~816px. Stage the editor off-screen
+ * at full page width so capture matches the on-screen Word layout.
  */
-async function withFlattenedClone<T>(
+async function withExportLayout<T>(
+  root: ParentNode,
+  pageWidth: number,
+  run: () => Promise<T>,
+): Promise<T> {
+  const shell = resolveExportShell(root);
+  if (!shell || shell.clientWidth >= pageWidth - 8) {
+    return run();
+  }
+
+  const snap = {
+    width: shell.style.width,
+    minWidth: shell.style.minWidth,
+    maxWidth: shell.style.maxWidth,
+    position: shell.style.position,
+    left: shell.style.left,
+    top: shell.style.top,
+    zIndex: shell.style.zIndex,
+    overflow: shell.style.overflow,
+    visibility: shell.style.visibility,
+  };
+
+  shell.style.width = `${pageWidth}px`;
+  shell.style.minWidth = `${pageWidth}px`;
+  shell.style.maxWidth = `${pageWidth}px`;
+  shell.style.position = "fixed";
+  shell.style.left = "-20000px";
+  shell.style.top = "0";
+  shell.style.zIndex = "-1";
+  shell.style.overflow = "visible";
+  shell.style.visibility = "hidden";
+
+  await nextFrame();
+  await nextFrame();
+  await pause(isConstrainedCaptureDevice() ? 520 : 180);
+
+  try {
+    return await run();
+  } finally {
+    shell.style.width = snap.width;
+    shell.style.minWidth = snap.minWidth;
+    shell.style.maxWidth = snap.maxWidth;
+    shell.style.position = snap.position;
+    shell.style.left = snap.left;
+    shell.style.top = snap.top;
+    shell.style.zIndex = snap.zIndex;
+    shell.style.overflow = snap.overflow;
+    shell.style.visibility = snap.visibility;
+  }
+}
+
+/**
+ * Clone with resolved computed styles inside `.ep-root` so CSS variables and
+ * Arabic fonts survive outside the live editor tree.
+ */
+async function withEpRootClone<T>(
   pageEl: HTMLElement,
   width: number,
   height: number,
   run: (clone: HTMLElement) => Promise<T>,
 ): Promise<T> {
+  const epRoot = pageEl.closest(".ep-root") as HTMLElement | null;
   const host = document.createElement("div");
   host.setAttribute("data-qalib-capture-host", "");
   host.style.cssText = [
     "position:fixed",
-    "left:0",
+    "left:-20000px",
     "top:0",
-    "z-index:2147483645",
+    "z-index:-1",
     `width:${width}px`,
-    `height:${height}px`,
     "overflow:visible",
     "background:#ffffff",
     "pointer-events:none",
-    "opacity:1",
+    "visibility:hidden",
   ].join(";");
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "ep-root";
+  wrapper.style.width = `${width}px`;
+  wrapper.style.background = "#ffffff";
+  if (epRoot) copyCssVariables(epRoot, wrapper);
+
   const clone = pageEl.cloneNode(true) as HTMLElement;
   inlineComputedTree(pageEl, clone);
   clone.style.width = `${width}px`;
+  clone.style.minWidth = `${width}px`;
+  clone.style.maxWidth = `${width}px`;
   clone.style.height = `${height}px`;
   clone.style.backgroundColor = "#ffffff";
-  clone.style.color = clone.style.color || "#000000";
-  host.appendChild(clone);
+  clone.style.color = clone.style.color || "#111111";
+  clone.style.margin = "0";
+  clone.style.boxShadow = "none";
+  clone.style.transform = "none";
+
+  wrapper.appendChild(clone);
+  host.appendChild(wrapper);
   document.body.appendChild(host);
   try {
     await nextFrame();
     await nextFrame();
+    await pause(100);
     return await run(clone);
   } finally {
     host.remove();
@@ -438,493 +528,35 @@ function isTransparentColor(color: string): boolean {
   );
 }
 
-function isNearWhiteFill(color: string): boolean {
-  const c = color.trim().toLowerCase();
-  if (c === "#fff" || c === "#ffffff" || c === "white") return true;
-  const rgb = c.match(/rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/);
-  if (!rgb) return false;
-  return +rgb[1] > 248 && +rgb[2] > 248 && +rgb[3] > 248;
-}
-
-function applyFill(
-  ctx: CanvasRenderingContext2D,
-  color: string,
-  fallback: string,
-): boolean {
-  if (isTransparentColor(color)) return false;
-  try {
-    ctx.fillStyle = fallback;
-    ctx.fillStyle = color;
-    return true;
-  } catch {
-    ctx.fillStyle = fallback;
-    return true;
-  }
-}
-
-function applyStroke(ctx: CanvasRenderingContext2D, color: string): boolean {
-  if (isTransparentColor(color)) return false;
-  try {
-    ctx.strokeStyle = color;
-    return true;
-  } catch {
-    ctx.strokeStyle = "#000000";
-    return true;
-  }
-}
-
-function elementClassName(el: Element): string {
-  if (typeof el.className === "string") return el.className;
-  if (el.className && typeof el.className === "object") {
-    return String(el.className);
-  }
-  return "";
-}
-
-function shouldSkipPaintEl(el: HTMLElement): boolean {
-  return /overlay|widget|resize-handle|popup|toolbar|caret|yjs-cursor|title-bar/i.test(
-    elementClassName(el),
-  );
-}
-
-function collectPaintElements(root: HTMLElement): HTMLElement[] {
-  const out: HTMLElement[] = [root];
-  const visit = (el: Element) => {
-    for (const child of el.children) {
-      if (child instanceof HTMLElement) {
-        out.push(child);
-        visit(child);
-      }
-    }
-    if (el.shadowRoot) {
-      for (const child of el.shadowRoot.children) {
-        if (child instanceof HTMLElement) {
-          out.push(child);
-          visit(child);
-        }
-      }
-    }
-  };
-  visit(root);
-  return out;
-}
-
-function walkTextNodes(root: Node, visit: (node: Text) => void) {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let node: Node | null;
-  while ((node = walker.nextNode())) visit(node as Text);
-  if (root instanceof Element) {
-    if (root.shadowRoot) walkTextNodes(root.shadowRoot, visit);
-    for (const el of root.querySelectorAll("*")) {
-      if (el.shadowRoot) walkTextNodes(el.shadowRoot, visit);
-    }
-  }
-}
-
-function canvasToDataUrl(canvas: HTMLCanvasElement): string {
-  try {
-    const png = canvas.toDataURL("image/png");
-    if (png.startsWith("data:image/png") && png.length > 80) return png;
-  } catch {
-    /* tainted */
-  }
-  try {
-    const jpeg = canvas.toDataURL("image/jpeg", 0.92);
-    if (
-      (jpeg.startsWith("data:image/jpeg") || jpeg.startsWith("data:image/jpg")) &&
-      jpeg.length > 80
-    ) {
-      return jpeg;
-    }
-  } catch {
-    /* tainted */
-  }
-  throw new Error("Canvas encode failed");
-}
-
-function exportPixelRatio(visualW: number, visualH: number): number {
-  const dpr = Math.min(2, typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1);
-  const maxEdge = 2048;
-  return Math.max(
-    1,
-    Math.min(dpr, maxEdge / Math.max(visualW, 1), maxEdge / Math.max(visualH, 1)),
-  );
-}
-
-function unionClientRects(rects: Array<DOMRect | { left: number; top: number; right: number; bottom: number }>) {
-  let left = Infinity;
-  let top = Infinity;
-  let right = -Infinity;
-  let bottom = -Infinity;
-  for (const r of rects) {
-    left = Math.min(left, r.left);
-    top = Math.min(top, r.top);
-    right = Math.max(right, r.right);
-    bottom = Math.max(bottom, r.bottom);
-  }
-  return { left, top, right, bottom, width: right - left, height: bottom - top };
-}
-
-function groupClientRectsByLine(rects: DOMRect[]) {
-  const sorted = [...rects].sort((a, b) => a.top - b.top || a.left - b.left);
-  const lines: DOMRect[][] = [];
-  for (const r of sorted) {
-    const last = lines[lines.length - 1];
-    if (last) {
-      const box = unionClientRects(last);
-      const sameLine = Math.abs(r.top - box.top) < Math.max(3, box.height * 0.55);
-      if (sameLine) {
-        last.push(r);
-        continue;
-      }
-    }
-    lines.push([r]);
-  }
-  return lines.map((line) => unionClientRects(line));
-}
-
-function lineEndOffset(
-  node: Text,
-  raw: string,
-  start: number,
-  line: { top: number; bottom: number },
-): number {
-  const range = document.createRange();
-  let lo = start + 1;
-  let hi = raw.length;
-  let best = Math.min(raw.length, start + 1);
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    try {
-      range.setStart(node, start);
-      range.setEnd(node, mid);
-    } catch {
-      break;
-    }
-    const overflow = Array.from(range.getClientRects()).some(
-      (r) => r.top > line.bottom - 1,
-    );
-    if (overflow) hi = mid - 1;
-    else {
-      best = mid;
-      lo = mid + 1;
-    }
-  }
-  return Math.max(best, start + 1);
-}
-
-function paintCanvasLine(
-  ctx: CanvasRenderingContext2D,
-  text: string,
-  box: { left: number; top: number; right: number; bottom: number; height: number },
-  cs: CSSStyleDeclaration,
-  origin: DOMRect,
-) {
-  if (!text) return;
-  const rtl = cs.direction === "rtl";
-  const align = cs.textAlign;
-  ctx.direction = rtl ? "rtl" : "ltr";
-  ctx.textBaseline = "alphabetic";
-  const isRight =
-    align === "right" ||
-    (align === "end" && !rtl) ||
-    (align === "start" && rtl);
-  const isCenter = align === "center";
-  ctx.textAlign = isCenter ? "center" : isRight ? "right" : "left";
-  const x = isCenter
-    ? (box.left + box.right) / 2 - origin.left
-    : isRight
-      ? box.right - origin.left
-      : box.left - origin.left;
-  const y = box.top - origin.top + box.height * 0.78;
-  ctx.fillText(text, x, y);
-}
-
-/**
- * Paint a live editor page onto a canvas using layout boxes and text ranges.
- * Avoids SVG foreignObject, so Tailwind oklch / color-mix cannot abort export.
- */
-function paintPageToCanvas(
-  pageEl: HTMLElement,
-  pixelRatio: number,
-  drawImages: boolean,
-): HTMLCanvasElement {
-  const root = pageEl.getBoundingClientRect();
-  const width = Math.max(1, Math.round(root.width || pageEl.offsetWidth));
-  const height = Math.max(1, Math.round(root.height || pageEl.offsetHeight));
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(width * pixelRatio));
-  canvas.height = Math.max(1, Math.round(height * pixelRatio));
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Canvas context unavailable");
-  ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, width, height);
-  ctx.imageSmoothingEnabled = true;
-
-  for (const el of collectPaintElements(pageEl)) {
-    if (el !== pageEl && shouldSkipPaintEl(el)) continue;
-    const cs = getComputedStyle(el);
-    if (cs.display === "none" || cs.visibility === "hidden") continue;
-    if (Number.parseFloat(cs.opacity || "1") < 0.05) continue;
-    const r = el.getBoundingClientRect();
-    const x = r.left - root.left;
-    const y = r.top - root.top;
-    const w = r.width;
-    const h = r.height;
-    if (w < 0.5 || h < 0.5) continue;
-    if (x + w < 0 || y + h < 0 || x > width || y > height) continue;
-
-    const display = cs.display;
-    const paintChrome =
-      el === pageEl ||
-      display.includes("table") ||
-      /layout-page|layout-table|layout-cell|layout-block/.test(
-        elementClassName(el),
-      );
-
-    if (applyFill(ctx, cs.backgroundColor, "#ffffff")) {
-      if (!isNearWhiteFill(String(ctx.fillStyle))) {
-        ctx.fillRect(x, y, w, h);
-      }
-    }
-
-    if (!paintChrome) continue;
-
-    const sides: Array<[number, string, number, number, number, number]> = [
-      [
-        Number.parseFloat(cs.borderTopWidth) || 0,
-        cs.borderTopColor,
-        x,
-        y + 0.5,
-        x + w,
-        y + 0.5,
-      ],
-      [
-        Number.parseFloat(cs.borderRightWidth) || 0,
-        cs.borderRightColor,
-        x + w - 0.5,
-        y,
-        x + w - 0.5,
-        y + h,
-      ],
-      [
-        Number.parseFloat(cs.borderBottomWidth) || 0,
-        cs.borderBottomColor,
-        x,
-        y + h - 0.5,
-        x + w,
-        y + h - 0.5,
-      ],
-      [
-        Number.parseFloat(cs.borderLeftWidth) || 0,
-        cs.borderLeftColor,
-        x + 0.5,
-        y,
-        x + 0.5,
-        y + h,
-      ],
-    ];
-    for (const [bw, color, x1, y1, x2, y2] of sides) {
-      if (bw < 0.4) continue;
-      if (!applyStroke(ctx, color)) continue;
-      ctx.lineWidth = Math.max(1, bw);
-      ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
-      ctx.stroke();
-    }
-  }
-
-  if (drawImages) {
-    for (const img of pageEl.querySelectorAll("img")) {
-      if (!(img instanceof HTMLImageElement) || !img.naturalWidth) continue;
-      const r = img.getBoundingClientRect();
-      try {
-        ctx.drawImage(
-          img,
-          r.left - root.left,
-          r.top - root.top,
-          r.width,
-          r.height,
-        );
-      } catch {
-        /* tainted image */
-      }
-    }
-  }
-
-  walkTextNodes(pageEl, (textNode) => {
-    const raw = textNode.nodeValue ?? "";
-    if (!raw.replace(/\s+/g, "")) return;
-    const parent = textNode.parentElement;
-    if (!parent || shouldSkipPaintEl(parent)) return;
-    const cs = getComputedStyle(parent);
-    if (cs.display === "none" || cs.visibility === "hidden") return;
-    applyFill(ctx, cs.color, "#111111");
-    if (isNearWhiteFill(String(ctx.fillStyle))) {
-      ctx.fillStyle = "#111111";
-    }
-
-    const fontSize = cs.fontSize || "14px";
-    const fontFamily =
-      cs.fontFamily ||
-      '"NotoSansArabic","Noto Sans Arabic","Segoe UI",Tahoma,Arial,sans-serif';
-    ctx.font = `${cs.fontStyle || "normal"} ${cs.fontWeight || "400"} ${fontSize} ${fontFamily}`;
-
-    const range = document.createRange();
-    try {
-      range.selectNodeContents(textNode);
-    } catch {
-      return;
-    }
-    const rects = Array.from(range.getClientRects()).filter(
-      (r) => r.width >= 0.5 && r.height >= 0.5,
-    );
-    if (!rects.length) return;
-
-    const lines = groupClientRectsByLine(rects);
-    if (lines.length === 1) {
-      paintCanvasLine(ctx, raw.replace(/\s+$/g, ""), lines[0]!, cs, root);
-      return;
-    }
-
-    let offset = 0;
-    for (const line of lines) {
-      if (offset >= raw.length) break;
-      const next = lineEndOffset(textNode, raw, offset, line);
-      paintCanvasLine(
-        ctx,
-        raw.slice(offset, next).replace(/\s+$/g, ""),
-        line,
-        cs,
-        root,
-      );
-      offset = next;
-    }
-  });
-
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  return canvas;
-}
-
-function wrapFallbackLines(
-  ctx: CanvasRenderingContext2D,
-  text: string,
-  maxWidth: number,
-): string[] {
-  const out: string[] = [];
-  for (const para of text.split(/\n/)) {
-    const words = para.split(/\s+/).filter(Boolean);
-    if (!words.length) {
-      out.push("");
-      continue;
-    }
-    let line = words[0]!;
-    for (let i = 1; i < words.length; i += 1) {
-      const next = `${line} ${words[i]}`;
-      if (ctx.measureText(next).width <= maxWidth) {
-        line = next;
-      } else {
-        out.push(line);
-        line = words[i]!;
-      }
-    }
-    out.push(line);
-  }
-  return out;
-}
-
-function fallbackTextPng(pageEl: HTMLElement): string {
-  const root = pageEl.getBoundingClientRect();
-  const width = Math.max(320, Math.round(root.width || pageEl.offsetWidth || 816));
-  const height = Math.max(400, Math.round(root.height || pageEl.offsetHeight || 1056));
-  const canvas = document.createElement("canvas");
-  const pr = exportPixelRatio(width, height);
-  canvas.width = Math.round(width * pr);
-  canvas.height = Math.round(height * pr);
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Canvas context unavailable");
-  ctx.setTransform(pr, 0, 0, pr, 0, 0);
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, width, height);
-  ctx.fillStyle = "#111111";
-  ctx.font =
-    '15px "NotoSansArabic","Noto Sans Arabic","Segoe UI",Tahoma,Arial,sans-serif';
-  ctx.textBaseline = "top";
-  const rtl =
-    getComputedStyle(pageEl).direction === "rtl" ||
-    pageEl.closest("[dir='rtl']") !== null;
-  ctx.direction = rtl ? "rtl" : "ltr";
-  ctx.textAlign = rtl ? "right" : "left";
-  const pad = 36;
-  const text = (pageEl.innerText || "").replace(/\n{3,}/g, "\n\n").trim();
-  const lines = wrapFallbackLines(ctx, text || " ", width - pad * 2);
-  let y = pad;
-  const x = rtl ? width - pad : pad;
-  for (const line of lines) {
-    if (y > height - pad) break;
-    ctx.fillText(line, x, y, width - pad * 2);
-    y += 22;
-  }
-  return canvasToDataUrl(canvas);
-}
-
-function paintPageToPng(pageEl: HTMLElement): string {
-  const root = pageEl.getBoundingClientRect();
-  const pr = exportPixelRatio(
-    root.width || pageEl.offsetWidth,
-    root.height || pageEl.offsetHeight,
-  );
-  try {
-    const withImages = paintPageToCanvas(pageEl, pr, true);
-    const url = canvasToDataUrl(withImages);
-    if (!isMostlyBlankCanvas(withImages)) return url;
-  } catch {
-    /* tainted or encode failure — retry without images */
-  }
-  const noImages = paintPageToCanvas(pageEl, pr, false);
-  const url = canvasToDataUrl(noImages);
-  if (!isMostlyBlankCanvas(noImages)) return url;
-  throw new Error("DOM paint was blank");
-}
-
 async function capturePageImage(pageEl: HTMLElement): Promise<string> {
   await waitUntilPainted(pageEl);
-  const width = Math.max(1, pageEl.scrollWidth || pageEl.offsetWidth);
-  const height = Math.max(1, pageEl.scrollHeight || pageEl.offsetHeight);
+  const width = Math.max(1, pageEl.offsetWidth || pageEl.scrollWidth);
+  const height = Math.max(1, pageEl.offsetHeight || pageEl.scrollHeight);
   const constrained = isConstrainedCaptureDevice();
-  const restoreColors = inlineResolvedColors(pageEl);
+  const profiles = captureProfiles(constrained);
+  let lastError: unknown;
 
-  try {
-    const profiles = captureProfiles(constrained);
-    for (const profile of profiles) {
-      try {
-        if (profile.flatten) {
-          const dataUrl = await withFlattenedClone(
-            pageEl,
-            width,
-            height,
-            (clone) => rasterizeNode(clone, profile, width, height),
-          );
-          if (dataUrl) return dataUrl;
-        } else {
-          const dataUrl = await rasterizeNode(pageEl, profile, width, height);
-          if (dataUrl) return dataUrl;
-        }
-      } catch {
-        /* next profile */
+  for (const profile of profiles) {
+    try {
+      if (profile.flatten) {
+        return await withEpRootClone(pageEl, width, height, (clone) =>
+          rasterizeNode(clone, profile, width, height),
+        );
       }
+      const restoreColors = inlineResolvedColors(pageEl);
+      try {
+        return await rasterizeNode(pageEl, profile, width, height);
+      } finally {
+        restoreColors();
+      }
+    } catch (err) {
+      lastError = err;
     }
-  } finally {
-    restoreColors();
   }
 
-  try {
-    return paintPageToPng(pageEl);
-  } catch {
-    return fallbackTextPng(pageEl);
-  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Failed to capture document page");
 }
 
 async function embedRaster(pdf: PDFDocument, dataUrl: string) {
@@ -935,13 +567,10 @@ async function embedRaster(pdf: PDFDocument, dataUrl: string) {
 
 function pdfPageSize(pageEl: HTMLElement): { w: number; h: number } {
   const visual = pageEl.getBoundingClientRect();
-  const w = Math.max(1, pageEl.offsetWidth || visual.width);
-  const h = Math.max(1, pageEl.offsetHeight || visual.height);
-  if (w < 600) {
-    const scale = 816 / w;
-    return { w: 816, h: Math.max(1, Math.round(h * scale)) };
-  }
-  return { w, h };
+  return {
+    w: Math.max(1, pageEl.offsetWidth || visual.width),
+    h: Math.max(1, pageEl.offsetHeight || visual.height),
+  };
 }
 
 function collectExportTargets(root: ParentNode): HTMLElement[] {
@@ -965,20 +594,16 @@ export async function exportDocxPagesToPdfBlob(
   opts: ExportDocxPdfOptions,
 ): Promise<Blob> {
   const prevZoom = opts.getZoom?.();
-  const constrained = isConstrainedCaptureDevice();
+  const pageWidth = Math.max(1, opts.getPageWidth?.() ?? 816);
 
   try {
-    try {
-      await ensureNotoArabicFont();
+    await ensureNotoArabicFont();
 
-      try {
-        opts.setZoom?.(1);
-      } catch {
-        /* zoom restore is best-effort */
-      }
+    return await withExportLayout(opts.root, pageWidth, async () => {
+      opts.setZoom?.(1);
       await nextFrame();
       await nextFrame();
-      await pause(constrained ? 420 : 80);
+      await pause(isConstrainedCaptureDevice() ? 520 : 120);
       await revealAllPages(opts.root, opts.scrollToPage, opts.totalPages);
 
       const pages = collectExportTargets(opts.root);
@@ -998,14 +623,10 @@ export async function exportDocxPagesToPdfBlob(
           /* ignore */
         }
         await nextFrame();
+        await pause(40);
 
         const { w: cssW, h: cssH } = pdfPageSize(pageEl);
-        let dataUrl: string;
-        try {
-          dataUrl = await capturePageImage(pageEl);
-        } catch {
-          dataUrl = fallbackTextPng(pageEl);
-        }
+        const dataUrl = await capturePageImage(pageEl);
         const img = await embedRaster(pdf, dataUrl);
         const page = pdf.addPage([cssW, cssH]);
         page.drawImage(img, {
@@ -1018,24 +639,7 @@ export async function exportDocxPagesToPdfBlob(
 
       const bytes = await pdf.save();
       return new Blob([new Uint8Array(bytes)], { type: "application/pdf" });
-    } catch {
-      const host =
-        opts.root instanceof HTMLElement
-          ? opts.root
-          : document.querySelector<HTMLElement>(".docx-shell") || document.body;
-      const pdf = await PDFDocument.create();
-      const dataUrl = fallbackTextPng(host);
-      const img = await embedRaster(pdf, dataUrl);
-      const page = pdf.addPage([816, 1056]);
-      page.drawImage(img, {
-        x: 0,
-        y: 0,
-        width: 816,
-        height: 1056,
-      });
-      const bytes = await pdf.save();
-      return new Blob([new Uint8Array(bytes)], { type: "application/pdf" });
-    }
+    });
   } finally {
     if (typeof prevZoom === "number") {
       opts.setZoom?.(prevZoom);
