@@ -2,16 +2,18 @@
  * Export Eigenpal DOCX pages as a real PDF blob (no browser print chrome).
  */
 
-import { toPng } from "html-to-image";
+import { toCanvas, toJpeg, toPng } from "html-to-image";
 import { PDFDocument } from "pdf-lib";
-import { isAppleTouchDevice } from "@/lib/device";
+import { isAppleTouchDevice, isConstrainedCaptureDevice } from "@/lib/device";
 
 /**
- * Sparse pages compress very small (especially at pixelRatio 1 on iOS), so this
+ * Sparse pages compress very small (especially at pixelRatio 1 on phones), so this
  * only flags an obviously broken capture — it never decides the export outcome.
  */
 const SUSPICIOUS_PNG_DATA_URL_LENGTH = 1200;
-const CAPTURE_ATTEMPTS = 3;
+/** 1×1 PNG so a single broken image cannot abort the whole page capture. */
+const IMAGE_PLACEHOLDER =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 export type ExportDocxPdfOptions = {
   root: ParentNode;
@@ -95,83 +97,218 @@ function isPngDataUrl(dataUrl: unknown): dataUrl is string {
   return typeof dataUrl === "string" && dataUrl.startsWith("data:image/png");
 }
 
+function isJpegDataUrl(dataUrl: unknown): dataUrl is string {
+  return (
+    typeof dataUrl === "string" &&
+    (dataUrl.startsWith("data:image/jpeg") ||
+      dataUrl.startsWith("data:image/jpg"))
+  );
+}
+
 function looksComplete(dataUrl: string): boolean {
   return dataUrl.length >= SUSPICIOUS_PNG_DATA_URL_LENGTH;
 }
 
-function captureOptions(pixelRatio: number) {
+function pause(ms: number) {
+  return new Promise<void>((r) => setTimeout(r, ms));
+}
+
+function nextFrame() {
+  return new Promise<void>((r) => requestAnimationFrame(() => r()));
+}
+
+type CaptureProfile = {
+  skipFonts: boolean;
+  pixelRatio: number;
+  isolated: boolean;
+  jpeg: boolean;
+};
+
+function captureProfiles(constrained: boolean): CaptureProfile[] {
+  if (constrained) {
+    // Phones: never embed webfonts first — Google Fonts + Noto Arabic blow
+    // Safari/Chrome's SVG data-URL limit and throw, which is the "export failed"
+    // dialog. System Arabic fonts still paint inside foreignObject on iOS.
+    return [
+      { skipFonts: true, pixelRatio: 1, isolated: true, jpeg: false },
+      { skipFonts: true, pixelRatio: 1, isolated: false, jpeg: false },
+      { skipFonts: true, pixelRatio: 1, isolated: true, jpeg: true },
+    ];
+  }
+  return [
+    { skipFonts: false, pixelRatio: 2, isolated: false, jpeg: false },
+    { skipFonts: true, pixelRatio: 1, isolated: true, jpeg: false },
+  ];
+}
+
+function captureFilter(node: HTMLElement): boolean {
+  const tag = node.tagName;
+  return tag !== "SCRIPT" && tag !== "IFRAME" && tag !== "VIDEO";
+}
+
+function buildCaptureOptions(
+  width: number,
+  height: number,
+  profile: CaptureProfile,
+) {
   return {
-    pixelRatio,
-    cacheBust: true,
+    pixelRatio: profile.pixelRatio,
+    cacheBust: false,
+    skipFonts: profile.skipFonts,
     backgroundColor: "#ffffff",
+    width,
+    height,
+    imagePlaceholder: IMAGE_PLACEHOLDER,
+    filter: captureFilter,
     style: {
       boxShadow: "none",
       margin: "0",
+      transform: "none",
+      zoom: "normal",
+      backdropFilter: "none",
+      filter: "none",
+    },
+    onclone: (_doc: Document, cloned?: HTMLElement) => {
+      if (!cloned) return;
+      cloned.style.boxShadow = "none";
+      cloned.style.margin = "0";
+      cloned.style.transform = "none";
+      cloned.style.filter = "none";
+      cloned.style.backdropFilter = "none";
+      cloned.style.backgroundColor = "#ffffff";
+      cloned.style.width = `${width}px`;
+      cloned.style.height = `${height}px`;
     },
   };
 }
 
-/**
- * Safari returns a blank PNG on the first foreignObject capture, so the very
- * first page of an export warms the cache with a throwaway render. Warming
- * every page would double the work and make iOS exports crawl.
- *
- * A suspiciously small PNG is retried, but a decodable PNG is always preferred
- * over failing the whole export.
- */
-async function capturePagePng(
-  pageEl: HTMLElement,
-  warmFirst: boolean,
+async function rasterizeNode(
+  node: HTMLElement,
+  profile: CaptureProfile,
+  width: number,
+  height: number,
 ): Promise<string> {
-  const opts = captureOptions(isAppleTouchDevice() ? 1 : 2);
-
-  if (warmFirst) {
-    try {
-      await toPng(pageEl, opts);
-    } catch {
-      /* first pass may throw; the real pass can still succeed */
-    }
+  const opts = buildCaptureOptions(width, height, profile);
+  if (profile.jpeg) {
+    const dataUrl = await toJpeg(node, { ...opts, quality: 0.92 });
+    if (isJpegDataUrl(dataUrl) && looksComplete(dataUrl)) return dataUrl;
+    throw new Error("JPEG capture was empty");
   }
+  try {
+    const dataUrl = await toPng(node, opts);
+    if (isPngDataUrl(dataUrl) && looksComplete(dataUrl)) return dataUrl;
+    if (isPngDataUrl(dataUrl)) return dataUrl;
+  } catch {
+    /* fall through to canvas */
+  }
+  const canvas = await toCanvas(node, opts);
+  if (canvas.width < 2 || canvas.height < 2) {
+    throw new Error("Canvas capture was empty");
+  }
+  return canvas.toDataURL("image/png");
+}
 
-  let fallback: string | null = null;
-  let lastError: unknown;
+/**
+ * Clone the page into a viewport-attached host so ancestor CSS zoom / overflow
+ * cannot poison html-to-image. Keep a trace of opacity so WebKit still paints.
+ */
+async function withIsolatedClone<T>(
+  pageEl: HTMLElement,
+  width: number,
+  height: number,
+  run: (clone: HTMLElement) => Promise<T>,
+): Promise<T> {
+  const host = document.createElement("div");
+  host.setAttribute("data-qalib-capture-host", "");
+  host.style.cssText = [
+    "position:fixed",
+    "left:0",
+    "top:0",
+    "z-index:0",
+    `width:${width}px`,
+    `height:${height}px`,
+    "overflow:visible",
+    "background:#ffffff",
+    "pointer-events:none",
+    "opacity:0.02",
+  ].join(";");
+  const clone = pageEl.cloneNode(true) as HTMLElement;
+  clone.style.boxShadow = "none";
+  clone.style.margin = "0";
+  clone.style.transform = "none";
+  clone.style.width = `${width}px`;
+  clone.style.height = `${height}px`;
+  clone.style.backgroundColor = "#ffffff";
+  host.appendChild(clone);
+  document.body.appendChild(host);
+  try {
+    await nextFrame();
+    await nextFrame();
+    return await run(clone);
+  } finally {
+    host.remove();
+  }
+}
 
-  for (let attempt = 0; attempt < CAPTURE_ATTEMPTS; attempt += 1) {
+async function waitUntilPainted(pageEl: HTMLElement) {
+  for (let i = 0; i < 12; i += 1) {
+    if (pageEl.offsetWidth >= 200 && pageEl.offsetHeight >= 200) return;
     try {
-      const dataUrl = await toPng(pageEl, opts);
-      if (isPngDataUrl(dataUrl)) {
-        if (looksComplete(dataUrl)) return dataUrl;
-        fallback = dataUrl;
-      } else {
-        lastError = new Error("Capture did not return a PNG");
+      pageEl.scrollIntoView({ block: "nearest", inline: "nearest" });
+    } catch {
+      /* ignore */
+    }
+    await nextFrame();
+    await pause(40);
+  }
+}
+
+async function capturePageImage(pageEl: HTMLElement): Promise<string> {
+  await waitUntilPainted(pageEl);
+  const width = Math.max(1, pageEl.scrollWidth || pageEl.offsetWidth);
+  const height = Math.max(1, pageEl.scrollHeight || pageEl.offsetHeight);
+  const profiles = captureProfiles(isConstrainedCaptureDevice());
+
+  let lastError: unknown;
+  for (const profile of profiles) {
+    try {
+      if (profile.isolated) {
+        return await withIsolatedClone(pageEl, width, height, (clone) =>
+          rasterizeNode(clone, profile, width, height),
+        );
       }
+      return await rasterizeNode(pageEl, profile, width, height);
     } catch (err) {
       lastError = err;
     }
-    if (attempt < CAPTURE_ATTEMPTS - 1) {
-      await new Promise<void>((r) => setTimeout(r, 100));
-    }
   }
-
-  if (fallback) return fallback;
 
   throw lastError instanceof Error
     ? lastError
     : new Error("Failed to capture document page");
 }
 
+async function embedRaster(pdf: PDFDocument, dataUrl: string) {
+  const bytes = dataUrlToBytes(dataUrl);
+  if (isJpegDataUrl(dataUrl)) return pdf.embedJpg(bytes);
+  return pdf.embedPng(bytes);
+}
+
 /**
- * Capture each .layout-page as PNG and assemble a PDF via pdf-lib.
+ * Capture each .layout-page as a raster image and assemble a PDF via pdf-lib.
  * Does not call window.print().
  */
 export async function exportDocxPagesToPdfBlob(
   opts: ExportDocxPdfOptions,
 ): Promise<Blob> {
   const prevZoom = opts.getZoom?.();
+  const constrained = isConstrainedCaptureDevice();
 
   try {
     opts.setZoom?.(1);
-    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    await nextFrame();
+    await nextFrame();
+    await pause(constrained ? 280 : 80);
     await revealAllPages(opts.root, opts.scrollToPage, opts.totalPages);
 
     const pages = collectPageElements(opts.root);
@@ -180,19 +317,23 @@ export async function exportDocxPagesToPdfBlob(
     }
 
     const pdf = await PDFDocument.create();
-    const needsWarmUp = isAppleTouchDevice();
 
     for (let i = 0; i < pages.length; i += 1) {
       const pageEl = pages[i]!;
       opts.onProgress?.(i + 1, pages.length);
 
-      // CSS box size → PDF page size (points ≈ CSS px for screen-fidelity export).
-      const cssW = Math.max(1, pageEl.offsetWidth);
-      const cssH = Math.max(1, pageEl.offsetHeight);
+      try {
+        pageEl.scrollIntoView({ block: "nearest", inline: "nearest" });
+      } catch {
+        /* ignore */
+      }
+      await nextFrame();
 
-      const dataUrl = await capturePagePng(pageEl, needsWarmUp && i === 0);
-      const pngBytes = dataUrlToBytes(dataUrl);
-      const img = await pdf.embedPng(pngBytes);
+      const cssW = Math.max(1, pageEl.offsetWidth || pageEl.scrollWidth);
+      const cssH = Math.max(1, pageEl.offsetHeight || pageEl.scrollHeight);
+
+      const dataUrl = await capturePageImage(pageEl);
+      const img = await embedRaster(pdf, dataUrl);
       const page = pdf.addPage([cssW, cssH]);
       page.drawImage(img, {
         x: 0,
