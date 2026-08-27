@@ -134,6 +134,8 @@ type CaptureProfile = {
 function captureProfiles(constrained: boolean): CaptureProfile[] {
   if (constrained) {
     return [
+      // Browser-native capture with embedded fonts — required for joined Arabic.
+      { skipFonts: false, pixelRatio: 2, flatten: false, jpeg: false },
       { skipFonts: true, pixelRatio: 2, flatten: false, jpeg: false },
       { skipFonts: true, pixelRatio: 1, flatten: false, jpeg: false },
       { skipFonts: true, pixelRatio: 1, flatten: true, jpeg: false },
@@ -285,8 +287,59 @@ function buildCaptureOptions(
       margin: "0",
       transform: "none",
       filter: "none",
+      letterSpacing: "0",
+      wordSpacing: "normal",
     },
   };
+}
+
+async function waitForCaptureFonts(root: HTMLElement): Promise<void> {
+  try {
+    await ensureNotoArabicFont();
+    if ("fonts" in document) {
+      await document.fonts.ready;
+      const fam = getComputedStyle(root)
+        .fontFamily?.split(",")[0]
+        ?.replace(/["']/g, "")
+        .trim();
+      if (fam) {
+        await document.fonts.load(`16px "${fam}"`);
+        await document.fonts.load(`700 16px "${fam}"`);
+      }
+    }
+  } catch {
+    /* best effort */
+  }
+}
+
+/**
+ * Capture via html-to-image so the browser's HarfBuzz shaper renders Arabic.
+ * Manual canvas fillText cannot join Arabic glyphs (confirmed root cause).
+ */
+async function capturePageWithBrowser(pageEl: HTMLElement): Promise<{
+  dataUrl: string;
+  width: number;
+  height: number;
+}> {
+  const { width, height } = pageCssSize(pageEl);
+  const profiles = captureProfiles(isConstrainedCaptureDevice());
+  let lastErr: unknown;
+
+  for (const profile of profiles) {
+    try {
+      const runCapture = (node: HTMLElement) =>
+        rasterizeNode(node, profile, width, height);
+      const dataUrl = profile.flatten
+        ? await withFlattenedClone(pageEl, width, height, runCapture)
+        : await runCapture(pageEl);
+      return { dataUrl, width, height };
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr instanceof Error
+    ? lastErr
+    : new Error("Browser page capture failed");
 }
 
 function isMostlyBlankCanvas(canvas: HTMLCanvasElement): boolean {
@@ -1109,10 +1162,21 @@ async function capturePageImage(pageEl: HTMLElement): Promise<{
   await waitUntilPainted(pageEl);
   const restoreNoise = hideCaptureNoise(pageEl);
   const restoreTracking = neutralizeTracking(pageEl);
+  const restoreColors = inlineResolvedColors(pageEl);
   try {
+    await waitForCaptureFonts(pageEl);
     await nextFrame();
-    return paintPageToPng(pageEl);
+    await nextFrame();
+    await pause(isConstrainedCaptureDevice() ? 120 : 50);
+
+    try {
+      return await capturePageWithBrowser(pageEl);
+    } catch {
+      // Last resort: manual canvas paint (Arabic may break).
+      return paintPageToPng(pageEl);
+    }
   } finally {
+    restoreColors();
     restoreTracking();
     restoreNoise();
   }
