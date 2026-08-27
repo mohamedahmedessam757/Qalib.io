@@ -95,3 +95,9 @@ export function editorPathForMime(id: string, mimeType?: string | null) {
   if (isXlsxMime(mimeType)) return `/editor/sheet/${id}`;
   return `/editor/${id}`;
 }
+
+/** Sidecar JSON next to the PDF so overlays stay editable after save. */
+export function overlaysStoragePath(storagePath: string) {
+  // Keep a storage-safe key (some buckets only allow known extensions).
+  return `${storagePath}.overlays`;
+}

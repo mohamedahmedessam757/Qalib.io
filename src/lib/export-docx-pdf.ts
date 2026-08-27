@@ -615,6 +615,118 @@ function lineEndOffset(
   return Math.max(best, start + 1);
 }
 
+function styleSignature(cs: CSSStyleDeclaration): string {
+  return [
+    cs.fontStyle,
+    cs.fontWeight,
+    cs.fontSize,
+    cs.fontFamily,
+    cs.color,
+    cs.direction,
+    cs.textAlign,
+    cs.textDecorationLine,
+  ].join("|");
+}
+
+type MergedTextRun = {
+  text: string;
+  first: Text;
+  last: Text;
+  parent: HTMLElement;
+  cs: CSSStyleDeclaration;
+};
+
+/**
+ * Merge adjacent text nodes that share the same style so Arabic is shaped as
+ * whole words (canvas fillText of single glyphs uses isolated forms).
+ * Confirmed cause of disconnected Arabic: char-by-char paint + letter-spacing.
+ */
+function collectMergedTextRuns(pageEl: HTMLElement): MergedTextRun[] {
+  const nodes: Text[] = [];
+  walkTextNodes(pageEl, (n) => nodes.push(n));
+  const runs: MergedTextRun[] = [];
+  let current: MergedTextRun | null = null;
+  let currentKey = "";
+
+  for (const node of nodes) {
+    const parent = node.parentElement;
+    if (!parent || shouldSkipPaintEl(parent)) {
+      current = null;
+      continue;
+    }
+    const raw = node.nodeValue ?? "";
+    if (!raw.replace(/\s+/g, "")) {
+      if (current && /^\s*$/.test(raw)) {
+        current.text += raw;
+        current.last = node;
+      }
+      continue;
+    }
+    const cs = getComputedStyle(parent);
+    if (cs.display === "none" || cs.visibility === "hidden") {
+      current = null;
+      continue;
+    }
+    const key = styleSignature(cs);
+    const canMerge =
+      current &&
+      currentKey === key &&
+      (current.last.parentElement === parent ||
+        current.last.parentElement?.parentElement === parent.parentElement);
+
+    if (canMerge && current) {
+      current.text += raw;
+      current.last = node;
+    } else {
+      current = { text: raw, first: node, last: node, parent, cs };
+      currentKey = key;
+      runs.push(current);
+    }
+  }
+  return runs;
+}
+
+function neutralizeTracking(root: HTMLElement): () => void {
+  const saved: Array<{
+    el: HTMLElement;
+    letterSpacing: string;
+    wordSpacing: string;
+  }> = [];
+  const nodes = root.querySelectorAll<HTMLElement>("*");
+  nodes.forEach((el) => {
+    const cs = getComputedStyle(el);
+    const ls = cs.letterSpacing;
+    const ws = cs.wordSpacing;
+    const needsLs =
+      ls &&
+      ls !== "normal" &&
+      ls !== "0px" &&
+      ls !== "0" &&
+      Number.parseFloat(ls) !== 0;
+    const needsWs =
+      ws &&
+      ws !== "normal" &&
+      ws !== "0px" &&
+      ws !== "0" &&
+      Number.parseFloat(ws) !== 0;
+    if (!needsLs && !needsWs) return;
+    saved.push({
+      el,
+      letterSpacing: el.style.letterSpacing,
+      wordSpacing: el.style.wordSpacing,
+    });
+    el.style.letterSpacing = "0";
+    el.style.wordSpacing = "normal";
+  });
+  void root.offsetWidth;
+  return () => {
+    for (const item of saved) {
+      item.el.style.letterSpacing = item.letterSpacing;
+      item.el.style.wordSpacing = item.wordSpacing;
+    }
+  };
+}
+
 function paintCanvasLine(
   ctx: CanvasRenderingContext2D,
   text: string,
@@ -625,10 +737,20 @@ function paintCanvasLine(
   scaleY: number,
 ) {
   if (!text) return;
-  const rtl = cs.direction === "rtl";
+  const rtl =
+    cs.direction === "rtl" ||
+    /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(
+      text,
+    );
   const align = cs.textAlign;
   ctx.direction = rtl ? "rtl" : "ltr";
   ctx.textBaseline = "middle";
+  try {
+    // Never apply letter-spacing — disconnects Arabic and spaces Latin.
+    ctx.letterSpacing = "0px";
+  } catch {
+    /* ignore */
+  }
   const isRight =
     align === "right" ||
     (align === "end" && !rtl) ||
@@ -748,13 +870,9 @@ function paintPageToCanvas(
     }
   }
 
-  walkTextNodes(pageEl, (textNode) => {
-    const raw = textNode.nodeValue ?? "";
-    if (!raw.replace(/\s+/g, "")) return;
-    const parent = textNode.parentElement;
-    if (!parent || shouldSkipPaintEl(parent)) return;
-    const cs = getComputedStyle(parent);
-    if (cs.display === "none" || cs.visibility === "hidden") return;
+  for (const run of collectMergedTextRuns(pageEl)) {
+    const { text: raw, first, last, cs } = run;
+    if (!raw.replace(/\s+/g, "")) continue;
     applyFill(ctx, cs.color, "#111111");
     if (isNearWhiteFill(String(ctx.fillStyle))) {
       ctx.fillStyle = "#111111";
@@ -765,27 +883,23 @@ function paintPageToCanvas(
       cs.fontFamily ||
       '"NotoSansArabic","Noto Sans Arabic","Segoe UI",Tahoma,Arial,sans-serif';
     ctx.font = `${cs.fontStyle || "normal"} ${cs.fontWeight || "400"} ${fontSize} ${fontFamily}`;
-    // letter-spacing disconnects Arabic glyphs and spaces Latin oddly — never apply for Arabic.
-    const textSample = raw.slice(0, 80);
-    const hasAr = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(
-      textSample,
-    );
     try {
-      ctx.letterSpacing = hasAr ? "0px" : cs.letterSpacing || "0px";
+      ctx.letterSpacing = "0px";
     } catch {
       /* ignore */
     }
 
     const range = document.createRange();
     try {
-      range.selectNodeContents(textNode);
+      range.setStart(first, 0);
+      range.setEnd(last, last.length);
     } catch {
-      return;
+      continue;
     }
     const rects = Array.from(range.getClientRects()).filter(
       (r) => r.width >= 0.4 && r.height >= 0.4,
     );
-    if (!rects.length) return;
+    if (!rects.length) continue;
 
     const union = unionClientRects(rects);
     const maxH = Math.max(...rects.map((r) => r.height));
@@ -816,26 +930,72 @@ function paintPageToCanvas(
           ctx.stroke();
         }
       }
-      return;
+      continue;
     }
 
     const lines = groupClientRectsByLine(rects);
-    let offset = 0;
-    for (const line of lines) {
-      if (offset >= raw.length) break;
-      const next = lineEndOffset(textNode, raw, offset, line);
-      paintCanvasLine(
-        ctx,
-        raw.slice(offset, next).replace(/\s+$/g, ""),
-        line,
-        cs,
-        visual,
-        scaleX,
-        scaleY,
-      );
-      offset = next;
+    if (first === last) {
+      let offset = 0;
+      for (const line of lines) {
+        if (offset >= raw.length) break;
+        const next = lineEndOffset(first, raw, offset, line);
+        paintCanvasLine(
+          ctx,
+          raw.slice(offset, next).replace(/\s+$/g, ""),
+          line,
+          cs,
+          visual,
+          scaleX,
+          scaleY,
+        );
+        offset = next;
+      }
+    } else {
+      // Merged multi-node run: split by measured width so Arabic stays shaped.
+      let rest = raw;
+      for (let i = 0; i < lines.length; i += 1) {
+        const line = lines[i]!;
+        if (!rest) break;
+        if (i === lines.length - 1) {
+          paintCanvasLine(
+            ctx,
+            rest.replace(/\s+$/g, ""),
+            line,
+            cs,
+            visual,
+            scaleX,
+            scaleY,
+          );
+          break;
+        }
+        const maxW = Math.max(8, line.width / scaleX);
+        let lo = 1;
+        let hi = rest.length;
+        let best = 1;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          const chunk = rest.slice(0, mid);
+          if (ctx.measureText(chunk).width <= maxW) {
+            best = mid;
+            lo = mid + 1;
+          } else hi = mid - 1;
+        }
+        // Prefer breaking on whitespace when possible.
+        const space = rest.lastIndexOf(" ", best);
+        const cut = space > 0 ? space + 1 : Math.max(1, best);
+        paintCanvasLine(
+          ctx,
+          rest.slice(0, cut).replace(/\s+$/g, ""),
+          line,
+          cs,
+          visual,
+          scaleX,
+          scaleY,
+        );
+        rest = rest.slice(cut);
+      }
     }
-  });
+  }
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   return canvas;
@@ -948,9 +1108,12 @@ async function capturePageImage(pageEl: HTMLElement): Promise<{
 }> {
   await waitUntilPainted(pageEl);
   const restoreNoise = hideCaptureNoise(pageEl);
+  const restoreTracking = neutralizeTracking(pageEl);
   try {
+    await nextFrame();
     return paintPageToPng(pageEl);
   } finally {
+    restoreTracking();
     restoreNoise();
   }
 }

@@ -4,6 +4,7 @@ import {
   isPdfMime,
   isXlsxMime,
   MAX_UPLOAD_BYTES,
+  overlaysStoragePath,
   PDF_MIME,
   sanitizeTitle,
   STORAGE_BUCKET,
@@ -138,7 +139,10 @@ export async function DELETE(_request: Request, { params }: Params) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  await supabase.storage.from(STORAGE_BUCKET).remove([doc.storagePath]);
+  await supabase.storage.from(STORAGE_BUCKET).remove([
+    doc.storagePath,
+    overlaysStoragePath(doc.storagePath),
+  ]);
 
   if (prisma) {
     await prisma.document.delete({ where: { id } });

@@ -320,6 +320,19 @@ export function PdfEditorClient({
           }
         }
         if (!cancelled) setLoadProgress(100);
+
+        // Restore editable overlays saved alongside the PDF.
+        try {
+          const ovRes = await fetch(`/api/documents/${documentId}/overlays`);
+          if (ovRes.ok && !cancelled) {
+            const ovJson = (await ovRes.json()) as { overlays?: unknown };
+            if (Array.isArray(ovJson.overlays) && ovJson.overlays.length > 0) {
+              setOverlays(ovJson.overlays as PdfOverlay[]);
+            }
+          }
+        } catch {
+          /* overlays optional */
+        }
       } catch {
         if (!cancelled) toast.error(tc("error"));
       }
@@ -344,52 +357,50 @@ export function PdfEditorClient({
     return exportPdfWithOverlays(src, overlaysRef.current);
   }, []);
 
-  const bakeOverlaysIntoBuffer = useCallback(async () => {
-    const src = bufferRef.current;
-    if (!src) return null;
-    if (overlaysRef.current.length === 0) return src.slice(0);
-    const bytes = await exportPdfWithOverlays(src, overlaysRef.current);
-    return Uint8Array.from(bytes).buffer as ArrayBuffer;
-  }, []);
-
   const persist = useCallback(async () => {
     if (persistingRef.current) return false;
     persistingRef.current = true;
     try {
-      const bytes = await buildBytes();
-      if (!bytes) return false;
+      const src = bufferRef.current;
+      if (!src) return false;
       setSaveState("saving");
       toast.message(t("savingOverlay"));
+      // Keep the base PDF unbaked so overlays stay editable after reload.
       const res = await fetch(`/api/documents/${documentId}`, {
         method: "PUT",
         headers: { "Content-Type": PDF_MIME },
-        body: new Blob([new Uint8Array(bytes)], { type: PDF_MIME }),
+        body: new Blob([new Uint8Array(src)], { type: PDF_MIME }),
       });
       if (!res.ok) {
         setSaveState("error");
         toast.error(t("saveError"));
         return false;
       }
+      const overlaysRes = await fetch(
+        `/api/documents/${documentId}/overlays`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ overlays: overlaysRef.current }),
+        },
+      );
+      if (!overlaysRes.ok) {
+        setSaveState("error");
+        toast.error(t("saveError"));
+        return false;
+      }
       dirtyRef.current = false;
       setSaveState("saved");
-      setBufferSafe(new Uint8Array(bytes).slice().buffer);
-      setOverlays([]);
-      setHistory([]);
-      setSelectedId(null);
       toast.success(tc("saved"));
       return true;
-    } catch (err) {
+    } catch {
       setSaveState("error");
-      if (err instanceof ArabicRasterizeError) {
-        toast.error(t("arabicExportFailed"));
-      } else {
-        toast.error(t("saveError"));
-      }
+      toast.error(t("saveError"));
       return false;
     } finally {
       persistingRef.current = false;
     }
-  }, [buildBytes, documentId, setBufferSafe, t, tc]);
+  }, [documentId, t, tc]);
 
   // Dirty flag only — never auto-bake. Bake on Save / Export / page ops.
   const markDirty = useCallback(() => {
@@ -899,13 +910,8 @@ export function PdfEditorClient({
       return;
     }
     try {
-      let working = bufferRef.current;
+      const working = bufferRef.current;
       if (!working) return;
-      if (overlaysRef.current.length > 0) {
-        working = (await bakeOverlaysIntoBuffer()) ?? working;
-        setOverlays([]);
-        setHistory([]);
-      }
       const { PDFDocument } = await import("pdf-lib");
       const srcPdf = await PDFDocument.load(working.slice(0));
       const order = Array.from({ length: srcPdf.getPageCount() }, (_, i) => i);
@@ -916,18 +922,26 @@ export function PdfEditorClient({
       copied.forEach((p) => out.addPage(p));
       const bytes = await out.save();
       setBufferSafe(Uint8Array.from(bytes).buffer as ArrayBuffer);
+
+      // Remap overlay page indices to match the new page order.
+      const remap = new Map(order.map((oldIdx, newIdx) => [oldIdx, newIdx]));
+      setOverlays((prev) =>
+        prev.map((o) => ({
+          ...o,
+          pageIndex: remap.get(o.pageIndex) ?? o.pageIndex,
+        })),
+      );
+      setHistory([]);
+      setSelectedId(null);
+
       const count = out.getPageCount();
       pageCountRef.current = count;
       setPageCount(count);
       setPageIndex(toIndex);
       dirtyRef.current = true;
       markDirty();
-    } catch (err) {
-      if (err instanceof ArabicRasterizeError) {
-        toast.error(t("arabicExportFailed"));
-      } else {
-        toast.error(t("saveError"));
-      }
+    } catch {
+      toast.error(t("saveError"));
     }
   }
 
@@ -1027,20 +1041,14 @@ export function PdfEditorClient({
     const src = bufferRef.current;
     if (!src) return;
     try {
-      let working = src;
-      if (overlaysRef.current.length > 0) {
-        working = (await bakeOverlaysIntoBuffer()) ?? src;
-      }
       const { PDFDocument } = await import("pdf-lib");
-      const pdf = await PDFDocument.load(working.slice(0));
+      const pdf = await PDFDocument.load(src.slice(0));
       const last = pdf.getPage(pdf.getPageCount() - 1);
       const { width, height } = last.getSize();
       pdf.addPage([width, height]);
       const bytes = await pdf.save();
       const next = Uint8Array.from(bytes).buffer;
       setBufferSafe(next);
-      setOverlays([]);
-      setHistory([]);
       const count = pdf.getPageCount();
       pageCountRef.current = count;
       setPageCount(count);
@@ -1048,12 +1056,8 @@ export function PdfEditorClient({
       dirtyRef.current = true;
       markDirty();
       toast.success(t("pageAdd"));
-    } catch (err) {
-      if (err instanceof ArabicRasterizeError) {
-        toast.error(t("arabicExportFailed"));
-      } else {
-        toast.error(t("saveError"));
-      }
+    } catch {
+      toast.error(t("saveError"));
     }
   }
 
@@ -1065,29 +1069,20 @@ export function PdfEditorClient({
     }
     setDeletingPage(true);
     try {
-      let working = src;
-      const hadOverlays = overlaysRef.current.length > 0;
-      if (hadOverlays) {
-        working = (await bakeOverlaysIntoBuffer()) ?? src;
-      }
       const { PDFDocument } = await import("pdf-lib");
-      const pdf = await PDFDocument.load(working.slice(0));
+      const pdf = await PDFDocument.load(src.slice(0));
       const idx = Math.min(pageIndex, pdf.getPageCount() - 1);
       pdf.removePage(idx);
       const bytes = await pdf.save();
       const next = Uint8Array.from(bytes).buffer;
       setBufferSafe(next);
-      if (hadOverlays) {
-        setOverlays([]);
-      } else {
-        setOverlays((prev) =>
-          prev
-            .filter((o) => o.pageIndex !== idx)
-            .map((o) =>
-              o.pageIndex > idx ? { ...o, pageIndex: o.pageIndex - 1 } : o,
-            ),
-        );
-      }
+      setOverlays((prev) =>
+        prev
+          .filter((o) => o.pageIndex !== idx)
+          .map((o) =>
+            o.pageIndex > idx ? { ...o, pageIndex: o.pageIndex - 1 } : o,
+          ),
+      );
       setHistory([]);
       setSelectedId(null);
       const count = pdf.getPageCount();
@@ -1097,12 +1092,8 @@ export function PdfEditorClient({
       dirtyRef.current = true;
       markDirty();
       setDeletePageOpen(false);
-    } catch (err) {
-      if (err instanceof ArabicRasterizeError) {
-        toast.error(t("arabicExportFailed"));
-      } else {
-        toast.error(t("saveError"));
-      }
+    } catch {
+      toast.error(t("saveError"));
     } finally {
       setDeletingPage(false);
     }
@@ -1244,7 +1235,7 @@ export function PdfEditorClient({
         ? tc("saved")
         : saveState === "error"
           ? tc("error")
-          : overlays.length > 0
+          : dirtyRef.current
             ? t("unsavedChanges")
             : null;
 
