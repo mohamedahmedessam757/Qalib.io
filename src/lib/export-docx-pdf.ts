@@ -40,7 +40,7 @@ async function revealAllPages(
         /* ignore */
       }
       await new Promise<void>((r) => requestAnimationFrame(() => r()));
-      await new Promise<void>((r) => setTimeout(r, 16));
+      await new Promise<void>((r) => setTimeout(r, 100));
     }
   }
 
@@ -59,7 +59,54 @@ async function revealAllPages(
     scroller.scrollTop = 0;
   }
 
-  await new Promise<void>((r) => setTimeout(r, 80));
+  await new Promise<void>((r) => setTimeout(r, 120));
+}
+
+function isPageElementReady(el: HTMLElement): boolean {
+  return el.offsetWidth >= 80 && el.offsetHeight >= 80;
+}
+
+/** Eigenpal often virtualizes pages — pick the layout-page most visible in the viewport. */
+function findVisibleLayoutPage(root: ParentNode): HTMLElement | null {
+  const pages = collectPageElements(root);
+  let best: HTMLElement | null = null;
+  let bestScore = 0;
+  const vh = typeof window !== "undefined" ? window.innerHeight : 900;
+
+  for (const el of pages) {
+    if (!isPageElementReady(el)) continue;
+    const r = el.getBoundingClientRect();
+    const visibleH = Math.min(r.bottom, vh) - Math.max(r.top, 0);
+    if (visibleH < 48) continue;
+    const score = visibleH * Math.max(1, r.width);
+    if (score > bestScore) {
+      bestScore = score;
+      best = el;
+    }
+  }
+
+  return best || pages.find(isPageElementReady) || pages[0] || null;
+}
+
+function resolvePageElement(
+  root: ParentNode,
+  pageIndex: number,
+  total: number,
+): HTMLElement | null {
+  const pages = collectPageElements(root);
+  if (pages.length >= total) {
+    const at = pages[pageIndex];
+    if (at && isPageElementReady(at)) return at;
+  }
+  const visible = findVisibleLayoutPage(root);
+  if (visible && isPageElementReady(visible)) return visible;
+  return pages[pageIndex] || pages[0] || null;
+}
+
+async function waitForPagePaint(constrained: boolean) {
+  await nextFrame();
+  await nextFrame();
+  await pause(constrained ? 360 : 150);
 }
 
 function findPagesRoot(root: ParentNode): HTMLElement | null {
@@ -1236,23 +1283,38 @@ export async function exportDocxPagesToPdfBlob(
       await pause(constrained ? 420 : 80);
       await revealAllPages(opts.root, opts.scrollToPage, opts.totalPages);
 
-      const pages = collectExportTargets(opts.root);
-      if (!pages.length) {
-        throw new Error("No document pages found to export");
-      }
+      const domPages = collectPageElements(opts.root);
+      const total = Math.max(1, opts.totalPages || 0, domPages.length);
 
       const pdf = await PDFDocument.create();
 
-      for (let i = 0; i < pages.length; i += 1) {
-        const pageEl = pages[i]!;
-        opts.onProgress?.(i + 1, pages.length);
+      // Capture page-by-page: virtualized editors only paint one layout-page at a time.
+      for (let i = 0; i < total; i += 1) {
+        const pageNum = i + 1;
+        opts.onProgress?.(pageNum, total);
+
+        if (opts.scrollToPage) {
+          try {
+            opts.scrollToPage(pageNum);
+          } catch {
+            /* ignore */
+          }
+        }
+
+        await waitForPagePaint(constrained);
+
+        const pageEl = resolvePageElement(opts.root, i, total);
+        if (!pageEl) {
+          throw new Error(`Page ${pageNum} not available for export`);
+        }
 
         try {
-          pageEl.scrollIntoView({ block: "nearest", inline: "nearest" });
+          pageEl.scrollIntoView({ block: "center", inline: "nearest" });
         } catch {
           /* ignore */
         }
         await nextFrame();
+        await pause(constrained ? 120 : 60);
 
         const shot = await capturePageImage(pageEl);
         const img = await embedRaster(pdf, shot.dataUrl);

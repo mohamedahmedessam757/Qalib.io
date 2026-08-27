@@ -156,10 +156,17 @@ export const DocxCanvas = forwardRef<DocxCanvasHandle, DocxCanvasProps>(
         await new Promise<void>((r) => requestAnimationFrame(() => r()));
         await new Promise<void>((r) => setTimeout(r, compact ? 320 : 160));
 
+        const layoutPages = editor?.getEditorRef?.()?.getLayout?.()?.pages;
+        const totalPages = Math.max(
+          1,
+          editor?.getTotalPages?.() || 0,
+          Array.isArray(layoutPages) ? layoutPages.length : 0,
+        );
+
         const opts = {
           root: shell,
           title: "Qalib document",
-          totalPages: editor?.getTotalPages?.() || 1,
+          totalPages,
           scrollToPage: (page: number) => editor?.scrollToPage?.(page),
           setZoom: (z: number) => editor?.setZoom?.(z),
           getZoom: () => editor?.getZoom?.() ?? 1,
