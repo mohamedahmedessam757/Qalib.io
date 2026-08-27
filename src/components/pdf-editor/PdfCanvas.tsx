@@ -17,6 +17,13 @@ type TextItem = {
 
 type PageSize = { width: number; height: number };
 
+/** pdf.js render scale — higher = sharper preview (export stays vector). */
+function pdfPreviewScale() {
+  const dpr =
+    typeof window !== "undefined" ? Math.min(window.devicePixelRatio || 1, 2) : 1;
+  return 1.25 * dpr;
+}
+
 export function PdfCanvas({
   buffer,
   overlays,
@@ -77,7 +84,8 @@ export function PdfCanvas({
 
       for (let i = 1; i <= pdf.numPages; i += 1) {
         const page = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 1.25 });
+        const scale = pdfPreviewScale();
+        const viewport = page.getViewport({ scale });
         sizes.push({ width: viewport.width, height: viewport.height });
 
         const content = await page.getTextContent();
@@ -86,7 +94,8 @@ export function PdfCanvas({
           if (!("str" in raw) || !raw.str) continue;
           const tx = pdfjs.Util.transform(viewport.transform, raw.transform);
           const fontHeight = Math.hypot(tx[2], tx[3]);
-          const width = (("width" in raw ? Number(raw.width) : 0) || 0) * 1.25;
+          const width =
+            (("width" in raw ? Number(raw.width) : 0) || 0) * scale;
           items.push({
             id: `t_${i}_${items.length}`,
             str: String(raw.str),
@@ -122,13 +131,15 @@ export function PdfCanvas({
       if (!pdf) return;
       for (let i = 1; i <= pageCount; i += 1) {
         const page = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 1.25 });
+        const viewport = page.getViewport({ scale: pdfPreviewScale() });
         const canvas = canvasRefs.current[i - 1];
         if (!canvas) continue;
         const ctx = canvas.getContext("2d");
         if (!ctx) continue;
         canvas.width = viewport.width;
         canvas.height = viewport.height;
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
         await page.render({ canvasContext: ctx, viewport, canvas }).promise;
         if (cancelled) return;
       }
