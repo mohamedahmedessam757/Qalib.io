@@ -292,6 +292,9 @@ export function PdfCanvas({
                         color: overlay.color,
                         fontSize: `${Math.max(10, overlay.fontSize * 0.85)}px`,
                         fontWeight: overlay.bold ? 700 : 400,
+                        fontStyle: overlay.italic ? "italic" : "normal",
+                        textDecoration: overlay.underline ? "underline" : "none",
+                        letterSpacing: "0px",
                         textAlign:
                           overlay.align === "center"
                             ? "center"

@@ -20,12 +20,16 @@ export function PdfSidePanel({
   pageIndex,
   pageCount,
   selectedId,
+  canPaste,
   labels,
   onTab,
   onClose,
   onSelectLayer,
   onEditText,
   onDeleteLayer,
+  onCopyLayer,
+  onDuplicateLayer,
+  onPasteLayer,
   onReorderLayers,
   onRemoveAllLayers,
   onSelectPage,
@@ -39,6 +43,7 @@ export function PdfSidePanel({
   pageIndex: number;
   pageCount: number;
   selectedId: string | null;
+  canPaste: boolean;
   labels: {
     toggleLayers: string;
     layersTitle: string;
@@ -59,6 +64,9 @@ export function PdfSidePanel({
     layerWhiteout: string;
     edit: string;
     delete: string;
+    copy: string;
+    duplicate: string;
+    paste: string;
     cancel: string;
   };
   onTab: (tab: PdfSideTab) => void;
@@ -66,6 +74,9 @@ export function PdfSidePanel({
   onSelectLayer: (id: string) => void;
   onEditText: (overlay: TextOverlay) => void;
   onDeleteLayer: (id: string) => void;
+  onCopyLayer: (id: string) => void;
+  onDuplicateLayer: (id: string) => void;
+  onPasteLayer: () => void;
   onReorderLayers: (
     pageIndex: number,
     fromIndex: number,
@@ -90,6 +101,9 @@ export function PdfSidePanel({
     layerWhiteout: labels.layerWhiteout,
     edit: labels.edit,
     delete: labels.delete,
+    copy: labels.copy,
+    duplicate: labels.duplicate,
+    paste: labels.paste,
   };
 
   const pageLabels = {
@@ -130,10 +144,14 @@ export function PdfSidePanel({
         pageIndex={pageIndex}
         pageCount={pageCount}
         selectedId={selectedId}
+        canPaste={canPaste}
         labels={layerLabels}
         onSelect={onSelectLayer}
         onEditText={onEditText}
         onDelete={onDeleteLayer}
+        onCopy={onCopyLayer}
+        onDuplicate={onDuplicateLayer}
+        onPaste={onPasteLayer}
         onReorder={onReorderLayers}
         onRemoveAllPage={onRemoveAllLayers}
       />

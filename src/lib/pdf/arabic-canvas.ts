@@ -63,6 +63,8 @@ export async function rasterizePdfTextBlock(opts: {
   align?: "start" | "center" | "end";
   rtl?: boolean;
   bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
   fontFamily?: "noto" | "sans" | "serif";
 }): Promise<{ bytes: Uint8Array; width: number; height: number } | null> {
   if (typeof document === "undefined") return null;
@@ -70,22 +72,29 @@ export async function rasterizePdfTextBlock(opts: {
   const ok = await ensureNotoArabicFont();
   const fontStack = resolveFontStack(opts.fontFamily, ok);
   const weight = opts.bold ? "700" : "400";
+  const style = opts.italic ? "italic" : "normal";
 
   const dpr = Math.min(
     3,
     Math.max(2, typeof window !== "undefined" ? window.devicePixelRatio || 2 : 2),
   );
   const fontSize = Math.max(8, Math.min(opts.fontSize, 72));
-  const lineHeight = fontSize * 1.4;
+  const lineHeight = fontSize * 1.45;
   const pad = 3;
   const lines = (opts.text || " ").replace(/\r\n/g, "\n").split("\n");
   const rtl = opts.rtl !== false;
   const align = opts.align || (rtl ? "end" : "start");
   const color = parseHexColor(opts.color);
+  const fontCss = `${style} ${weight} ${fontSize}px ${fontStack}`;
 
   const measure = document.createElement("canvas").getContext("2d");
   if (!measure) return null;
-  measure.font = `${weight} ${fontSize}px ${fontStack}`;
+  measure.font = fontCss;
+  try {
+    measure.letterSpacing = "0px";
+  } catch {
+    /* ignore */
+  }
 
   let contentW = 0;
   for (const line of lines) {
@@ -98,7 +107,7 @@ export async function rasterizePdfTextBlock(opts: {
     8,
   );
   const cssH = Math.max(
-    Math.ceil(lines.length * lineHeight + pad * 2),
+    Math.ceil(lines.length * lineHeight + pad * 2 + (opts.underline ? 4 : 0)),
     fontSize + pad * 2,
   );
 
@@ -110,7 +119,12 @@ export async function rasterizePdfTextBlock(opts: {
 
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, cssW, cssH);
-  ctx.font = `${weight} ${fontSize}px ${fontStack}`;
+  ctx.font = fontCss;
+  try {
+    ctx.letterSpacing = "0px";
+  } catch {
+    /* ignore */
+  }
   ctx.fillStyle = color;
   ctx.textBaseline = "top";
   ctx.direction = rtl ? "rtl" : "ltr";
@@ -127,7 +141,19 @@ export async function rasterizePdfTextBlock(opts: {
     align === "center" ? cssW / 2 : align === "end" ? cssW - pad : pad;
 
   lines.forEach((line, i) => {
-    ctx.fillText(line || " ", x, pad + i * lineHeight);
+    const ty = pad + i * lineHeight;
+    ctx.fillText(line || " ", x, ty);
+    if (opts.underline) {
+      const tw = ctx.measureText(line || " ").width;
+      const x1 =
+        align === "center" ? x - tw / 2 : align === "end" ? x - tw : x;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = Math.max(1, fontSize * 0.06);
+      ctx.beginPath();
+      ctx.moveTo(x1, ty + fontSize + 1);
+      ctx.lineTo(x1 + tw, ty + fontSize + 1);
+      ctx.stroke();
+    }
   });
 
   const blob = await new Promise<Blob | null>((resolve) => {

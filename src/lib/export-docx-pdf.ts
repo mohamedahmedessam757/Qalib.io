@@ -765,8 +765,13 @@ function paintPageToCanvas(
       cs.fontFamily ||
       '"NotoSansArabic","Noto Sans Arabic","Segoe UI",Tahoma,Arial,sans-serif';
     ctx.font = `${cs.fontStyle || "normal"} ${cs.fontWeight || "400"} ${fontSize} ${fontFamily}`;
+    // letter-spacing disconnects Arabic glyphs and spaces Latin oddly — never apply for Arabic.
+    const textSample = raw.slice(0, 80);
+    const hasAr = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(
+      textSample,
+    );
     try {
-      ctx.letterSpacing = cs.letterSpacing || "0px";
+      ctx.letterSpacing = hasAr ? "0px" : cs.letterSpacing || "0px";
     } catch {
       /* ignore */
     }
