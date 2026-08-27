@@ -2,7 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { PDFDocumentProxy } from "pdfjs-dist";
-import type { PdfOverlay } from "@/lib/pdf/export-overlays";
+import type { PdfOverlay, TextOverlay } from "@/lib/pdf/export-overlays";
+import { hasArabic } from "@/lib/pdf/arabic-text";
+import { PdfTextOverlayView } from "./PdfTextOverlayView";
 
 type TextItem = {
   id: string;
@@ -58,7 +60,12 @@ export function PdfCanvas({
       const pdfjs = await import("pdfjs-dist");
       pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
-      const pdf = await pdfjs.getDocument({ data: buffer.slice(0) }).promise;
+      const pdf = await pdfjs.getDocument({
+        data: buffer.slice(0),
+        cMapUrl: `https://unpkg.com/pdfjs-dist@${pdfjs.version}/cmaps/`,
+        cMapPacked: true,
+        standardFontDataUrl: `https://unpkg.com/pdfjs-dist@${pdfjs.version}/standard_fonts/`,
+      }).promise;
       if (cancelled) {
         return;
       }
@@ -153,9 +160,11 @@ export function PdfCanvas({
   return (
     <div
       className="mx-auto flex w-full max-w-[920px] flex-col gap-4 p-3 sm:p-4"
+      dir="ltr"
       style={{
         transform: `scale(${zoom})`,
         transformOrigin: "top center",
+        direction: "ltr",
       }}
     >
       {Array.from({ length: pageCount }, (_, pageIndex) => {
@@ -165,11 +174,13 @@ export function PdfCanvas({
           <div
             key={pageIndex}
             data-pdf-page={pageIndex}
+            dir="ltr"
             className="relative mx-auto overflow-hidden rounded-lg bg-white shadow-[0_8px_30px_rgba(0,0,0,0.35)]"
             style={{
               width: "100%",
               maxWidth: size?.width ?? 800,
               aspectRatio: size ? `${size.width} / ${size.height}` : "8.5 / 11",
+              direction: "ltr",
             }}
             onClick={(e) => {
               if (tool === "select") {
@@ -189,7 +200,9 @@ export function PdfCanvas({
               ref={(el) => {
                 canvasRefs.current[pageIndex] = el;
               }}
+              dir="ltr"
               className="pointer-events-none h-full w-full"
+              style={{ direction: "ltr" }}
             />
 
             {tool === "select" &&
@@ -286,38 +299,50 @@ export function PdfCanvas({
                   }}
                 >
                   {overlay.type === "text" ? (
-                    <div
-                      className="h-full w-full overflow-hidden px-1 leading-tight"
-                      style={{
-                        color: overlay.color,
-                        fontSize: `${Math.max(10, overlay.fontSize * 0.85)}px`,
-                        fontWeight: overlay.bold ? 700 : 400,
-                        fontStyle: overlay.italic ? "italic" : "normal",
-                        textDecoration: overlay.underline ? "underline" : "none",
-                        letterSpacing: "0px",
-                        textAlign:
-                          overlay.align === "center"
-                            ? "center"
-                            : overlay.align === "end"
-                              ? "right"
-                              : "left",
-                        fontFamily:
-                          overlay.fontFamily === "serif"
-                            ? 'Georgia, "Times New Roman", serif'
-                            : overlay.fontFamily === "sans"
-                              ? 'system-ui, "Segoe UI", Tahoma, sans-serif'
-                              : '"NotoSansArabic", "IBM Plex Sans Arabic", "Segoe UI", Tahoma, sans-serif',
-                      }}
-                      dir={
-                        overlay.dir === "rtl"
-                          ? "rtl"
-                          : overlay.dir === "ltr"
-                            ? "ltr"
-                            : "auto"
-                      }
-                    >
-                      {overlay.text}
-                    </div>
+                    hasArabic(overlay.text) ? (
+                      <PdfTextOverlayView
+                        overlay={overlay as TextOverlay}
+                        boxWidthPx={Math.max(
+                          40,
+                          (size?.width ?? 800) * overlay.w,
+                        )}
+                      />
+                    ) : (
+                      <div
+                        className="h-full w-full overflow-hidden px-1 leading-tight"
+                        style={{
+                          color: overlay.color,
+                          fontSize: `${Math.max(10, overlay.fontSize * 0.85)}px`,
+                          fontWeight: overlay.bold ? 700 : 400,
+                          fontStyle: overlay.italic ? "italic" : "normal",
+                          textDecoration: overlay.underline
+                            ? "underline"
+                            : "none",
+                          letterSpacing: "0px",
+                          textAlign:
+                            overlay.align === "center"
+                              ? "center"
+                              : overlay.align === "end"
+                                ? "right"
+                                : "left",
+                          fontFamily:
+                            overlay.fontFamily === "serif"
+                              ? 'Georgia, "Times New Roman", serif'
+                              : overlay.fontFamily === "sans"
+                                ? 'system-ui, "Segoe UI", Tahoma, sans-serif'
+                                : '"NotoSansArabic", "IBM Plex Sans Arabic", "Segoe UI", Tahoma, sans-serif',
+                        }}
+                        dir={
+                          overlay.dir === "rtl"
+                            ? "rtl"
+                            : overlay.dir === "ltr"
+                              ? "ltr"
+                              : "auto"
+                        }
+                      >
+                        {overlay.text}
+                      </div>
+                    )
                   ) : null}
                   {overlay.type === "image" ? (
                     // eslint-disable-next-line @next/next/no-img-element

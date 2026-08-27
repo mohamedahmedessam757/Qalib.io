@@ -1608,7 +1608,7 @@ export function PdfEditorClient({
             locale === "ar" ? "flex-row-reverse" : "flex-row"
           }`}
         >
-          <div className="min-h-0 min-w-0 flex-1 overflow-auto">
+          <div className="min-h-0 min-w-0 flex-1 overflow-auto" dir="ltr">
           {!buffer ? (
             <div className="flex h-[60vh] flex-col items-center justify-center gap-3 px-6 text-sm text-muted">
               <LoaderCircle className="h-5 w-5 animate-spin text-accent" />

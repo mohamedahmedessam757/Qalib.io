@@ -3,6 +3,52 @@ import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
 import { hasArabic, preparePdfTextLine } from "./arabic-text";
 import { ensureNotoArabicFont, rasterizePdfTextBlock } from "./arabic-canvas";
 
+/** Match PdfCanvas viewport scale so export matches the editor. */
+const PDFJS_RENDER_SCALE = 1.25;
+
+async function loadPdfViaRenderedPages(source: ArrayBuffer): Promise<PDFDocument> {
+  const pdfjs = await import("pdfjs-dist");
+  pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+
+  const doc = await pdfjs.getDocument({
+    data: source.slice(0),
+    cMapUrl: `https://unpkg.com/pdfjs-dist@${pdfjs.version}/cmaps/`,
+    cMapPacked: true,
+    standardFontDataUrl: `https://unpkg.com/pdfjs-dist@${pdfjs.version}/standard_fonts/`,
+  }).promise;
+
+  const out = await PDFDocument.create();
+
+  for (let i = 1; i <= doc.numPages; i += 1) {
+    const page = await doc.getPage(i);
+    const viewport = page.getViewport({ scale: PDFJS_RENDER_SCALE });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.ceil(viewport.width);
+    canvas.height = Math.ceil(viewport.height);
+    canvas.setAttribute("dir", "ltr");
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas unavailable");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    await page.render({ canvasContext: ctx, viewport, canvas }).promise;
+
+    const dataUrl = canvas.toDataURL("image/png");
+    const b64 = dataUrl.split(",")[1];
+    if (!b64) throw new Error("Page rasterize failed");
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    const img = await out.embedPng(bytes);
+    const pg = out.addPage([viewport.width, viewport.height]);
+    pg.drawImage(img, {
+      x: 0,
+      y: 0,
+      width: viewport.width,
+      height: viewport.height,
+    });
+  }
+
+  return out;
+}
+
 export class ArabicRasterizeError extends Error {
   constructor(message = "ARABIC_RASTERIZE_FAILED") {
     super(message);
@@ -110,7 +156,17 @@ export async function exportPdfWithOverlays(
   source: ArrayBuffer,
   overlays: PdfOverlay[],
 ): Promise<Uint8Array> {
-  const pdf = await PDFDocument.load(source);
+  let pdf: PDFDocument;
+  if (typeof document !== "undefined") {
+    try {
+      // Rasterize each page through pdf.js (LTR canvas) so Arabic matches the editor.
+      pdf = await loadPdfViaRenderedPages(source);
+    } catch {
+      pdf = await PDFDocument.load(source);
+    }
+  } else {
+    pdf = await PDFDocument.load(source);
+  }
   pdf.registerFontkit(fontkit);
   const helvetica = await pdf.embedFont(StandardFonts.Helvetica);
   const helveticaBold = await pdf.embedFont(StandardFonts.HelveticaBold);
