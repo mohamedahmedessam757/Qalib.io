@@ -26,6 +26,9 @@ export type TextOverlay = PdfOverlayBase & {
   fontSize: number;
   color: string;
   coverOriginal?: boolean;
+  bold?: boolean;
+  /** Whitelisted font keys only — never raw CSS from user input. */
+  fontFamily?: "noto" | "sans" | "serif";
   /** Logical alignment inside the box */
   align?: "start" | "center" | "end";
   dir?: "rtl" | "ltr" | "auto";
@@ -151,6 +154,8 @@ export async function exportPdfWithOverlays(
           boxWidth: w,
           align,
           rtl: overlay.dir !== "ltr",
+          bold: Boolean(overlay.bold),
+          fontFamily: overlay.fontFamily || "noto",
         });
         if (raster) {
           const img = await pdf.embedPng(raster.bytes);

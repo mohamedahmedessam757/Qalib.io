@@ -291,6 +291,7 @@ export function PdfCanvas({
                       style={{
                         color: overlay.color,
                         fontSize: `${Math.max(10, overlay.fontSize * 0.85)}px`,
+                        fontWeight: overlay.bold ? 700 : 400,
                         textAlign:
                           overlay.align === "center"
                             ? "center"
@@ -298,7 +299,11 @@ export function PdfCanvas({
                               ? "right"
                               : "left",
                         fontFamily:
-                          '"NotoSansArabic", "IBM Plex Sans Arabic", "Segoe UI", Tahoma, sans-serif',
+                          overlay.fontFamily === "serif"
+                            ? 'Georgia, "Times New Roman", serif'
+                            : overlay.fontFamily === "sans"
+                              ? 'system-ui, "Segoe UI", Tahoma, sans-serif'
+                              : '"NotoSansArabic", "IBM Plex Sans Arabic", "Segoe UI", Tahoma, sans-serif',
                       }}
                       dir={
                         overlay.dir === "rtl"

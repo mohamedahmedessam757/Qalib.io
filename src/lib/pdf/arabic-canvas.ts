@@ -39,6 +39,21 @@ function parseHexColor(hex: string): string {
   return hex.startsWith("#") ? hex : `#${hex}`;
 }
 
+function resolveFontStack(
+  family: "noto" | "sans" | "serif" | undefined,
+  notoOk: boolean,
+): string {
+  if (family === "serif") {
+    return 'Georgia, "Times New Roman", serif';
+  }
+  if (family === "sans") {
+    return 'system-ui, "Segoe UI", Tahoma, Arial, sans-serif';
+  }
+  return notoOk
+    ? '"NotoSansArabic", "Segoe UI", Tahoma, Arial, sans-serif'
+    : '"Segoe UI", Tahoma, Arial, sans-serif';
+}
+
 export async function rasterizePdfTextBlock(opts: {
   text: string;
   fontSize: number;
@@ -47,15 +62,19 @@ export async function rasterizePdfTextBlock(opts: {
   boxWidth: number;
   align?: "start" | "center" | "end";
   rtl?: boolean;
+  bold?: boolean;
+  fontFamily?: "noto" | "sans" | "serif";
 }): Promise<{ bytes: Uint8Array; width: number; height: number } | null> {
   if (typeof document === "undefined") return null;
 
   const ok = await ensureNotoArabicFont();
-  const fontStack = ok
-    ? '"NotoSansArabic", "Segoe UI", Tahoma, Arial, sans-serif'
-    : '"Segoe UI", Tahoma, Arial, sans-serif';
+  const fontStack = resolveFontStack(opts.fontFamily, ok);
+  const weight = opts.bold ? "700" : "400";
 
-  const dpr = Math.min(3, Math.max(2, typeof window !== "undefined" ? window.devicePixelRatio || 2 : 2));
+  const dpr = Math.min(
+    3,
+    Math.max(2, typeof window !== "undefined" ? window.devicePixelRatio || 2 : 2),
+  );
   const fontSize = Math.max(8, Math.min(opts.fontSize, 72));
   const lineHeight = fontSize * 1.4;
   const pad = 3;
@@ -66,7 +85,7 @@ export async function rasterizePdfTextBlock(opts: {
 
   const measure = document.createElement("canvas").getContext("2d");
   if (!measure) return null;
-  measure.font = `${fontSize}px ${fontStack}`;
+  measure.font = `${weight} ${fontSize}px ${fontStack}`;
 
   let contentW = 0;
   for (const line of lines) {
@@ -78,7 +97,10 @@ export async function rasterizePdfTextBlock(opts: {
     Math.ceil(contentW) + pad * 2,
     8,
   );
-  const cssH = Math.max(Math.ceil(lines.length * lineHeight + pad * 2), fontSize + pad * 2);
+  const cssH = Math.max(
+    Math.ceil(lines.length * lineHeight + pad * 2),
+    fontSize + pad * 2,
+  );
 
   const canvas = document.createElement("canvas");
   canvas.width = Math.ceil(cssW * dpr);
@@ -88,12 +110,11 @@ export async function rasterizePdfTextBlock(opts: {
 
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, cssW, cssH);
-  ctx.font = `${fontSize}px ${fontStack}`;
+  ctx.font = `${weight} ${fontSize}px ${fontStack}`;
   ctx.fillStyle = color;
   ctx.textBaseline = "top";
   ctx.direction = rtl ? "rtl" : "ltr";
 
-  // Physical left/right alignment inside the box (independent of bidi).
   if (align === "center") {
     ctx.textAlign = "center";
   } else if (align === "end") {

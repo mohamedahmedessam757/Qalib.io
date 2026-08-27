@@ -7,12 +7,13 @@ import { Button } from "@/components/ui/Button";
 
 const easeOut = [0.23, 1, 0.32, 1] as const;
 
+const ARABIC_LETTER_RE = /[\u0600-\u06FF]/;
+
 export function isPdfSeedTextUnreadable(text: string): boolean {
   if (!text) return false;
   if (text.includes("\uFFFD")) return true;
-  const replacementCount = (text.match(/\uFFFD/g) || []).length;
-  if (replacementCount > 0) return true;
-  // High ratio of non-printable / private-use chars often means broken ToUnicode.
+  // Real Arabic letters present → treat as readable enough for the dialog seed.
+  if (ARABIC_LETTER_RE.test(text)) return false;
   let suspicious = 0;
   for (const ch of text) {
     const code = ch.charCodeAt(0);
@@ -105,7 +106,7 @@ export function EditPdfTextDialog({
             </div>
             <p className="mb-2 text-xs text-muted">{labels.hint}</p>
             {unreadable ? (
-              <p className="mb-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100/90">
+              <p className="mb-2 rounded-xl border border-line bg-white/5 px-3 py-2 text-xs text-muted">
                 {labels.unreadable}
               </p>
             ) : null}

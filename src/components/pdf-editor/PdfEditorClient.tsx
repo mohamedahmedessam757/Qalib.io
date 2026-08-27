@@ -15,6 +15,7 @@ import {
   AlignLeft,
   AlignRight,
   ArrowRight,
+  Bold,
   Bot,
   Circle,
   CloudUpload,
@@ -177,12 +178,17 @@ export function PdfEditorClient({
   const [pdfExportOpen, setPdfExportOpen] = useState(false);
   const [pdfExportPhase, setPdfExportPhase] = useState<ExportPdfPhase>("form");
   const [replaceDialog, setReplaceDialog] = useState<{
+    mode: "add" | "replace" | "edit";
     pageIndex: number;
     box: { x: number; y: number; w: number; h: number };
     seedText: string;
     unreadable: boolean;
     editOverlayId?: string;
   } | null>(null);
+  const [textBold, setTextBold] = useState(false);
+  const [textFontFamily, setTextFontFamily] = useState<
+    "noto" | "sans" | "serif"
+  >("noto");
   const [sidePanelOpen, setSidePanelOpen] = useState(!isMobile);
   const [sideTab, setSideTab] = useState<PdfSideTab>("layers");
   const [mobileSideOpen, setMobileSideOpen] = useState(false);
@@ -347,6 +353,7 @@ export function PdfEditorClient({
       const bytes = await buildBytes();
       if (!bytes) return false;
       setSaveState("saving");
+      toast.message(t("savingOverlay"));
       const res = await fetch(`/api/documents/${documentId}`, {
         method: "PUT",
         headers: { "Content-Type": PDF_MIME },
@@ -363,6 +370,7 @@ export function PdfEditorClient({
       setOverlays([]);
       setHistory([]);
       setSelectedId(null);
+      toast.success(tc("saved"));
       return true;
     } catch (err) {
       setSaveState("error");
@@ -375,25 +383,17 @@ export function PdfEditorClient({
     } finally {
       persistingRef.current = false;
     }
-  }, [buildBytes, documentId, setBufferSafe, t]);
+  }, [buildBytes, documentId, setBufferSafe, t, tc]);
 
+  // Dirty flag only — never auto-bake. Bake on Save / Export / page ops.
   const markDirty = useCallback(() => {
     dirtyRef.current = true;
     setSaveState("idle");
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      startTransition(() => {
-        void persist();
-      });
-    }, 3500);
-  }, [persist]);
-
-  useEffect(() => {
-    const id = setInterval(() => {
-      if (dirtyRef.current) void persist();
-    }, 60_000);
-    return () => clearInterval(id);
-  }, [persist]);
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+  }, []);
 
   pdfHandleRef.current = {
     getOverlays: () => overlaysRef.current,
@@ -455,6 +455,8 @@ export function PdfEditorClient({
       text: organized,
       fontSize,
       color,
+      bold: textBold,
+      fontFamily: textFontFamily,
       align: rtl ? "end" : "start",
       dir: rtl ? "rtl" : "ltr",
       coverOriginal,
@@ -463,18 +465,18 @@ export function PdfEditorClient({
 
   function onAddAt(pageIndex: number, x: number, y: number) {
     if (tool === "text") {
-      const overlay = makeTextOverlay(
+      setReplaceDialog({
+        mode: "add",
         pageIndex,
-        Math.min(x, 0.75),
-        Math.min(y, 0.9),
-        0.28,
-        0.05,
-        t("textPlaceholder"),
-      );
-      pushHistory([...overlays, overlay]);
-      setSelectedId(overlay.id);
-      setTool("select");
-      markDirty();
+        box: {
+          x: Math.min(x, 0.75),
+          y: Math.min(y, 0.9),
+          w: 0.28,
+          h: 0.05,
+        },
+        seedText: "",
+        unreadable: false,
+      });
       return;
     }
     if (tool === "whiteout") {
@@ -567,6 +569,7 @@ export function PdfEditorClient({
     text: string,
   ) {
     setReplaceDialog({
+      mode: "replace",
       pageIndex,
       box,
       seedText: text,
@@ -576,11 +579,22 @@ export function PdfEditorClient({
 
   function submitReplaceText(next: string) {
     if (!replaceDialog) return;
-    const { pageIndex, box, editOverlayId } = replaceDialog;
-    if (editOverlayId) {
+    const trimmed = next.trim();
+    if (!trimmed && replaceDialog.mode === "add") {
+      setReplaceDialog(null);
+      setTool("select");
+      return;
+    }
+    const { pageIndex, box, editOverlayId, mode } = replaceDialog;
+    if (editOverlayId || mode === "edit") {
+      const id = editOverlayId;
+      if (!id) {
+        setReplaceDialog(null);
+        return;
+      }
       setOverlays((prev) =>
         prev.map((o) => {
-          if (o.id !== editOverlayId || o.type !== "text") return o;
+          if (o.id !== id || o.type !== "text") return o;
           const text = organizePdfText(next);
           const rtl = hasArabic(text);
           return {
@@ -591,9 +605,27 @@ export function PdfEditorClient({
           };
         }),
       );
-      setSelectedId(editOverlayId);
+      setSelectedId(id);
       markDirty();
       setReplaceDialog(null);
+      setTool("select");
+      return;
+    }
+    if (mode === "add") {
+      const overlay = makeTextOverlay(
+        pageIndex,
+        box.x,
+        box.y,
+        Math.max(box.w, 0.1),
+        Math.max(box.h, 0.03),
+        next,
+        false,
+      );
+      pushHistory([...overlays, overlay]);
+      setSelectedId(overlay.id);
+      markDirty();
+      setReplaceDialog(null);
+      setTool("select");
       return;
     }
     const overlay = makeTextOverlay(
@@ -609,6 +641,7 @@ export function PdfEditorClient({
     setSelectedId(overlay.id);
     markDirty();
     setReplaceDialog(null);
+    setTool("select");
   }
 
   function scrollToOverlay(id: string) {
@@ -633,6 +666,7 @@ export function PdfEditorClient({
     setSelectedId(overlay.id);
     setPageIndex(overlay.pageIndex);
     setReplaceDialog({
+      mode: "edit",
       pageIndex: overlay.pageIndex,
       box: { x: overlay.x, y: overlay.y, w: overlay.w, h: overlay.h },
       seedText: overlay.text,
@@ -762,7 +796,12 @@ export function PdfEditorClient({
   }
 
   function updateSelectedText(
-    patch: Partial<Pick<TextOverlay, "text" | "align" | "dir" | "fontSize" | "color">>,
+    patch: Partial<
+      Pick<
+        TextOverlay,
+        "text" | "align" | "dir" | "fontSize" | "color" | "bold" | "fontFamily"
+      >
+    >,
   ) {
     if (!selectedId) return;
     setOverlays((prev) =>
@@ -775,8 +814,10 @@ export function PdfEditorClient({
           ...o,
           ...patch,
           text,
-          fontSize: patch.fontSize ?? fontSize,
-          color: patch.color ?? color,
+          fontSize: patch.fontSize ?? o.fontSize,
+          color: patch.color ?? o.color,
+          bold: patch.bold ?? o.bold,
+          fontFamily: patch.fontFamily ?? o.fontFamily,
           dir: patch.dir ?? (rtl ? "rtl" : o.dir || "ltr"),
           align:
             patch.align ??
@@ -1027,7 +1068,9 @@ export function PdfEditorClient({
         ? tc("saved")
         : saveState === "error"
           ? tc("error")
-          : null;
+          : overlays.length > 0
+            ? t("unsavedChanges")
+            : null;
 
   const toolbarLabels = {
     select: t("toolSelect"),
@@ -1445,6 +1488,62 @@ export function PdfEditorClient({
                     </Button>
                     <Button
                       size="sm"
+                      variant={selected.bold ? "solid" : "ghost"}
+                      onClick={() =>
+                        updateSelectedText({ bold: !selected.bold })
+                      }
+                      aria-label={t("bold")}
+                      title={t("bold")}
+                    >
+                      <Bold className="h-4 w-4" />
+                    </Button>
+                    <select
+                      className="min-h-9 rounded-lg border border-line bg-white/5 px-2 text-xs"
+                      value={selected.fontFamily || "noto"}
+                      aria-label={t("fontFamily")}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (v === "noto" || v === "sans" || v === "serif") {
+                          updateSelectedText({ fontFamily: v });
+                          setTextFontFamily(v);
+                        }
+                      }}
+                    >
+                      <option value="noto">{t("fontNoto")}</option>
+                      <option value="sans">{t("fontSans")}</option>
+                      <option value="serif">{t("fontSerif")}</option>
+                    </select>
+                    <label className="flex min-h-9 items-center gap-1 rounded-lg border border-line bg-white/5 px-2 text-xs">
+                      <span className="text-muted">{t("fontSize")}</span>
+                      <input
+                        type="number"
+                        min={8}
+                        max={72}
+                        className="w-12 bg-transparent outline-none"
+                        value={selected.fontSize}
+                        onChange={(e) => {
+                          const n = Number(e.target.value);
+                          if (!Number.isFinite(n)) return;
+                          const size = Math.min(72, Math.max(8, n));
+                          setFontSize(size);
+                          updateSelectedText({ fontSize: size });
+                        }}
+                      />
+                    </label>
+                    <label className="flex min-h-9 items-center gap-1 rounded-lg border border-line bg-white/5 px-2 text-xs">
+                      <span className="text-muted">{t("fontColor")}</span>
+                      <input
+                        type="color"
+                        className="h-7 w-8 cursor-pointer bg-transparent"
+                        value={selected.color || "#111827"}
+                        onChange={(e) => {
+                          setColor(e.target.value);
+                          updateSelectedText({ color: e.target.value });
+                        }}
+                      />
+                    </label>
+                    <Button
+                      size="sm"
                       variant={selected.align === "start" ? "solid" : "ghost"}
                       onClick={() => updateSelectedText({ align: "start" })}
                       aria-label={t("alignLeft")}
@@ -1476,9 +1575,15 @@ export function PdfEditorClient({
                     value={selected.text}
                     dir={selected.dir || (selectedTextRtl ? "rtl" : "ltr")}
                     style={{
-                      fontFamily: selectedTextRtl
-                        ? '"NotoSansArabic", "IBM Plex Sans Arabic", "Segoe UI", Tahoma, sans-serif'
-                        : undefined,
+                      fontWeight: selected.bold ? 700 : 400,
+                      fontFamily:
+                        selected.fontFamily === "serif"
+                          ? 'Georgia, "Times New Roman", serif'
+                          : selected.fontFamily === "sans"
+                            ? 'system-ui, "Segoe UI", Tahoma, sans-serif'
+                            : '"NotoSansArabic", "IBM Plex Sans Arabic", "Segoe UI", Tahoma, sans-serif',
+                      fontSize: `${Math.max(12, selected.fontSize)}px`,
+                      color: selected.color,
                       textAlign:
                         selected.align === "center"
                           ? "center"
@@ -1727,14 +1832,23 @@ export function PdfEditorClient({
         initialText={replaceDialog?.seedText ?? ""}
         unreadable={replaceDialog?.unreadable ?? false}
         labels={{
-          title: t("editTextTitle"),
-          hint: t("editTextHint"),
+          title:
+            replaceDialog?.mode === "add"
+              ? t("addText")
+              : t("editTextTitle"),
+          hint:
+            replaceDialog?.mode === "add"
+              ? t("editTextHintAdd")
+              : t("editTextHint"),
           unreadable: t("editTextUnreadable"),
           placeholder: t("textPlaceholder"),
           save: t("editTextSave"),
           cancel: t("cancel"),
         }}
-        onCancel={() => setReplaceDialog(null)}
+        onCancel={() => {
+          setReplaceDialog(null);
+          if (replaceDialog?.mode === "add") setTool("select");
+        }}
         onSubmit={submitReplaceText}
       />
 
