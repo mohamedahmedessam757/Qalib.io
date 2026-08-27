@@ -164,6 +164,7 @@ export function PdfCanvas({
         return (
           <div
             key={pageIndex}
+            data-pdf-page={pageIndex}
             className="relative mx-auto overflow-hidden rounded-lg bg-white shadow-[0_8px_30px_rgba(0,0,0,0.35)]"
             style={{
               width: "100%",
@@ -228,6 +229,7 @@ export function PdfCanvas({
               return (
                 <div
                   key={overlay.id}
+                  data-overlay-id={overlay.id}
                   className={`absolute cursor-move border ${
                     selected
                       ? "border-accent bg-accent/10"

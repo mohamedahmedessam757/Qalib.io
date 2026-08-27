@@ -57,6 +57,11 @@ import {
   type SelectionDraft,
 } from "./SelectionEditSheet";
 import {
+  TableSelectionEditSheet,
+  type TableSelectionDraft,
+} from "./TableSelectionEditSheet";
+import { readTableGridFromEditor } from "@/lib/editor/read-table-grid";
+import {
   ParagraphJumpSheet,
   type ParagraphJumpItem,
 } from "./ParagraphJumpSheet";
@@ -132,6 +137,10 @@ export function DocxEditorClient({
   const [menuOpen, setMenuOpen] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [draft, setDraft] = useState<SelectionDraft | null>(null);
+  const [tableSheetOpen, setTableSheetOpen] = useState(false);
+  const [tableDraft, setTableDraft] = useState<TableSelectionDraft | null>(
+    null,
+  );
   const [jumpOpen, setJumpOpen] = useState(false);
   const [jumpItems, setJumpItems] = useState<ParagraphJumpItem[]>([]);
   const [aiOpen, setAiOpen] = useState(false);
@@ -289,9 +298,20 @@ export function DocxEditorClient({
   }, [persist]);
 
   const openSelectionSheet = useCallback(() => {
-    const info = editorRef.current?.getSelectionInfo();
+    const editor = editorRef.current;
+    const info = editor?.getSelectionInfo();
     if (!info?.paraId) {
       toast.message(t("editSelectionHint"));
+      return;
+    }
+    const grid = readTableGridFromEditor(
+      () => editor?.getEditorRef()?.getView() ?? null,
+    );
+    if (grid) {
+      setTableDraft(grid);
+      setTableSheetOpen(true);
+      setSheetOpen(false);
+      setDraft(null);
       return;
     }
     setDraft({
@@ -299,6 +319,8 @@ export function DocxEditorClient({
       paragraphText: info.paragraphText || info.selectedText || "",
       selectedText: info.selectedText || "",
     });
+    setTableSheetOpen(false);
+    setTableDraft(null);
     setSheetOpen(true);
   }, [t]);
 
@@ -616,6 +638,55 @@ export function DocxEditorClient({
     markDirty();
     setSheetOpen(false);
     setDraft(null);
+  }
+
+  function onApplyTableCells(
+    cells: TableSelectionDraft["cells"],
+    matrix: string[][],
+  ) {
+    const editor = editorRef.current;
+    if (!editor || !tableDraft) return;
+    const focusRow = tableDraft.focusRow;
+    const focusCol = tableDraft.focusCol;
+    let applied = 0;
+    for (const cell of cells) {
+      const nextText = matrix[cell.row]?.[cell.col] ?? "";
+      const prevText = cell.text;
+      if (nextText === prevText) continue;
+      const ok = replaceParagraphText(editor, cell.paraId, nextText);
+      if (!ok) {
+        toast.error(t("applyError"));
+        return;
+      }
+      applied += 1;
+    }
+    if (applied > 0) markDirty();
+    setTableSheetOpen(false);
+    setTableDraft(null);
+    const focus = cells.find(
+      (c) => c.row === focusRow && c.col === focusCol,
+    );
+    if (focus) editor.scrollToParaId(focus.paraId);
+  }
+
+  function onClearTableCell(paraId: string) {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const ok = replaceParagraphText(editor, paraId, "");
+    if (!ok) {
+      toast.error(t("applyError"));
+      return;
+    }
+    setTableDraft((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        cells: prev.cells.map((c) =>
+          c.paraId === paraId ? { ...c, text: "" } : c,
+        ),
+      };
+    });
+    markDirty();
   }
 
   const statusLabel =
@@ -984,6 +1055,26 @@ export function DocxEditorClient({
         }}
         onApply={onApplyParagraph}
         onDelete={onDeleteParagraph}
+      />
+
+      <TableSelectionEditSheet
+        open={tableSheetOpen}
+        draft={tableDraft}
+        labels={{
+          title: t("editTable"),
+          hint: t("editTableHint"),
+          apply: t("apply"),
+          cancel: t("cancel"),
+          clearCell: t("clearCell"),
+          placeholder: t("editCellPlaceholder"),
+        }}
+        onClose={() => {
+          setTableSheetOpen(false);
+          setTableDraft(null);
+          setMobileHasSelection(false);
+        }}
+        onApply={onApplyTableCells}
+        onClearCell={onClearTableCell}
       />
 
       <ParagraphJumpSheet

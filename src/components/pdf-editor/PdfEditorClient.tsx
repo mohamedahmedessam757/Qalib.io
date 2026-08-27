@@ -8,7 +8,7 @@ import {
   useTransition,
 } from "react";
 import dynamic from "next/dynamic";
-import { useTranslations } from "next-intl";
+import { useTranslations, useLocale } from "next-intl";
 import { toast } from "sonner";
 import {
   AlignCenter,
@@ -23,6 +23,7 @@ import {
   FilePlus2,
   Frame,
   ImagePlus,
+  Layers,
   LoaderCircle,
   Minus,
   MoreVertical,
@@ -63,6 +64,7 @@ import {
 import {
   createId,
   exportPdfWithOverlays,
+  ArabicRasterizeError,
   type PdfOverlay,
   type ShapeOverlay,
   type TextOverlay,
@@ -72,6 +74,11 @@ import { ensureNotoArabicFont } from "@/lib/pdf/arabic-canvas";
 import { findLegacyBlankTitleBox } from "@/lib/pdf/strip-legacy-title";
 import type { PdfEditorHandle } from "@/lib/ai/apply-pdf-tools";
 import { PdfToolbar, type PdfTool } from "./PdfToolbar";
+import {
+  EditPdfTextDialog,
+  isPdfSeedTextUnreadable,
+} from "./EditPdfTextDialog";
+import { PdfSidePanel, type PdfSideTab } from "./PdfSidePanel";
 import {
   ExportPdfDialog,
   type ExportPdfFormValues,
@@ -145,6 +152,7 @@ export function PdfEditorClient({
   const t = useTranslations("pdfEditor");
   const tc = useTranslations("common");
   const te = useTranslations("editor");
+  const locale = useLocale();
   const isMobile = useIsMobile();
   const [buffer, setBuffer] = useState<ArrayBuffer | null>(null);
   const [overlays, setOverlays] = useState<PdfOverlay[]>([]);
@@ -168,6 +176,16 @@ export function PdfEditorClient({
   const [pending, startTransition] = useTransition();
   const [pdfExportOpen, setPdfExportOpen] = useState(false);
   const [pdfExportPhase, setPdfExportPhase] = useState<ExportPdfPhase>("form");
+  const [replaceDialog, setReplaceDialog] = useState<{
+    pageIndex: number;
+    box: { x: number; y: number; w: number; h: number };
+    seedText: string;
+    unreadable: boolean;
+    editOverlayId?: string;
+  } | null>(null);
+  const [sidePanelOpen, setSidePanelOpen] = useState(!isMobile);
+  const [sideTab, setSideTab] = useState<PdfSideTab>("layers");
+  const [mobileSideOpen, setMobileSideOpen] = useState(false);
   const [pdfReadyFile, setPdfReadyFile] = useState<File | null>(null);
   const [pdfReadyUrl, setPdfReadyUrl] = useState<string | null>(null);
   // Read when the dialog opens: these APIs do not exist during SSR.
@@ -185,6 +203,7 @@ export function PdfEditorClient({
   const pdfHandleRef = useRef<PdfEditorHandle | null>(null);
   const dummyEditorRef = useRef(null);
   const pdfExportBusyRef = useRef(false);
+  const persistingRef = useRef(false);
   const pdfReadyUrlRef = useRef<string | null>(null);
   const lastExportValuesRef = useRef<ExportPdfFormValues | null>(null);
 
@@ -313,27 +332,49 @@ export function PdfEditorClient({
     return exportPdfWithOverlays(src, overlaysRef.current);
   }, []);
 
+  const bakeOverlaysIntoBuffer = useCallback(async () => {
+    const src = bufferRef.current;
+    if (!src) return null;
+    if (overlaysRef.current.length === 0) return src.slice(0);
+    const bytes = await exportPdfWithOverlays(src, overlaysRef.current);
+    return Uint8Array.from(bytes).buffer as ArrayBuffer;
+  }, []);
+
   const persist = useCallback(async () => {
-    const bytes = await buildBytes();
-    if (!bytes) return false;
-    setSaveState("saving");
-    const res = await fetch(`/api/documents/${documentId}`, {
-      method: "PUT",
-      headers: { "Content-Type": PDF_MIME },
-      body: new Blob([new Uint8Array(bytes)], { type: PDF_MIME }),
-    });
-    if (!res.ok) {
+    if (persistingRef.current) return false;
+    persistingRef.current = true;
+    try {
+      const bytes = await buildBytes();
+      if (!bytes) return false;
+      setSaveState("saving");
+      const res = await fetch(`/api/documents/${documentId}`, {
+        method: "PUT",
+        headers: { "Content-Type": PDF_MIME },
+        body: new Blob([new Uint8Array(bytes)], { type: PDF_MIME }),
+      });
+      if (!res.ok) {
+        setSaveState("error");
+        toast.error(t("saveError"));
+        return false;
+      }
+      dirtyRef.current = false;
+      setSaveState("saved");
+      setBufferSafe(new Uint8Array(bytes).slice().buffer);
+      setOverlays([]);
+      setHistory([]);
+      setSelectedId(null);
+      return true;
+    } catch (err) {
       setSaveState("error");
-      toast.error(t("saveError"));
+      if (err instanceof ArabicRasterizeError) {
+        toast.error(t("arabicExportFailed"));
+      } else {
+        toast.error(t("saveError"));
+      }
       return false;
+    } finally {
+      persistingRef.current = false;
     }
-    dirtyRef.current = false;
-    setSaveState("saved");
-    setBufferSafe(new Uint8Array(bytes).slice().buffer);
-    setOverlays([]);
-    setHistory([]);
-    setSelectedId(null);
-    return true;
   }, [buildBytes, documentId, setBufferSafe, t]);
 
   const markDirty = useCallback(() => {
@@ -525,8 +566,36 @@ export function PdfEditorClient({
     box: { x: number; y: number; w: number; h: number },
     text: string,
   ) {
-    const next = window.prompt(t("textPlaceholder"), text);
-    if (next === null) return;
+    setReplaceDialog({
+      pageIndex,
+      box,
+      seedText: text,
+      unreadable: isPdfSeedTextUnreadable(text),
+    });
+  }
+
+  function submitReplaceText(next: string) {
+    if (!replaceDialog) return;
+    const { pageIndex, box, editOverlayId } = replaceDialog;
+    if (editOverlayId) {
+      setOverlays((prev) =>
+        prev.map((o) => {
+          if (o.id !== editOverlayId || o.type !== "text") return o;
+          const text = organizePdfText(next);
+          const rtl = hasArabic(text);
+          return {
+            ...o,
+            text,
+            dir: rtl ? "rtl" : "ltr",
+            align: rtl ? "end" : o.align || "start",
+          };
+        }),
+      );
+      setSelectedId(editOverlayId);
+      markDirty();
+      setReplaceDialog(null);
+      return;
+    }
     const overlay = makeTextOverlay(
       pageIndex,
       box.x,
@@ -539,6 +608,127 @@ export function PdfEditorClient({
     pushHistory([...overlays, overlay]);
     setSelectedId(overlay.id);
     markDirty();
+    setReplaceDialog(null);
+  }
+
+  function scrollToOverlay(id: string) {
+    const safe =
+      typeof CSS !== "undefined" && typeof CSS.escape === "function"
+        ? CSS.escape(id)
+        : id.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    const el = document.querySelector(`[data-overlay-id="${safe}"]`);
+    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  function onSelectLayerFromPanel(id: string) {
+    setSelectedId(id);
+    const o = overlays.find((x) => x.id === id);
+    if (o) {
+      setPageIndex(o.pageIndex);
+      window.setTimeout(() => scrollToOverlay(id), 80);
+    }
+  }
+
+  function onEditTextFromPanel(overlay: TextOverlay) {
+    setSelectedId(overlay.id);
+    setPageIndex(overlay.pageIndex);
+    setReplaceDialog({
+      pageIndex: overlay.pageIndex,
+      box: { x: overlay.x, y: overlay.y, w: overlay.w, h: overlay.h },
+      seedText: overlay.text,
+      unreadable: false,
+      editOverlayId: overlay.id,
+    });
+  }
+
+  function onDeleteLayerFromPanel(id: string) {
+    pushHistory(overlays.filter((o) => o.id !== id));
+    if (selectedId === id) setSelectedId(null);
+    markDirty();
+  }
+
+  function onReorderLayers(
+    targetPage: number,
+    fromIndex: number,
+    toIndex: number,
+  ) {
+    const globalIndices: number[] = [];
+    overlays.forEach((o, i) => {
+      if (o.pageIndex === targetPage) globalIndices.push(i);
+    });
+    if (
+      fromIndex < 0 ||
+      toIndex < 0 ||
+      fromIndex >= globalIndices.length ||
+      toIndex >= globalIndices.length
+    ) {
+      return;
+    }
+    const pageItems = globalIndices.map((i) => overlays[i]);
+    const [moved] = pageItems.splice(fromIndex, 1);
+    pageItems.splice(toIndex, 0, moved);
+    const next = [...overlays];
+    globalIndices.forEach((globalIdx, localIdx) => {
+      next[globalIdx] = pageItems[localIdx];
+    });
+    pushHistory(next);
+    markDirty();
+  }
+
+  function onRemoveAllLayersForPage(targetPage: number) {
+    pushHistory(overlays.filter((o) => o.pageIndex !== targetPage));
+    setSelectedId(null);
+    markDirty();
+  }
+
+  function onSelectPageFromPanel(idx: number) {
+    setPageIndex(idx);
+    const pageEl = document.querySelector(`[data-pdf-page="${idx}"]`);
+    pageEl?.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (isMobile) setMobileSideOpen(false);
+  }
+
+  async function onMovePage(fromIndex: number, toIndex: number) {
+    if (
+      fromIndex === toIndex ||
+      fromIndex < 0 ||
+      toIndex < 0 ||
+      fromIndex >= pageCount ||
+      toIndex >= pageCount
+    ) {
+      return;
+    }
+    try {
+      let working = bufferRef.current;
+      if (!working) return;
+      if (overlaysRef.current.length > 0) {
+        working = (await bakeOverlaysIntoBuffer()) ?? working;
+        setOverlays([]);
+        setHistory([]);
+      }
+      const { PDFDocument } = await import("pdf-lib");
+      const srcPdf = await PDFDocument.load(working.slice(0));
+      const order = Array.from({ length: srcPdf.getPageCount() }, (_, i) => i);
+      const [moved] = order.splice(fromIndex, 1);
+      order.splice(toIndex, 0, moved);
+      const out = await PDFDocument.create();
+      const copied = await out.copyPages(srcPdf, order);
+      copied.forEach((p) => out.addPage(p));
+      const bytes = await out.save();
+      setBufferSafe(Uint8Array.from(bytes).buffer as ArrayBuffer);
+      const count = out.getPageCount();
+      pageCountRef.current = count;
+      setPageCount(count);
+      setPageIndex(toIndex);
+      dirtyRef.current = true;
+      markDirty();
+    } catch (err) {
+      if (err instanceof ArabicRasterizeError) {
+        toast.error(t("arabicExportFailed"));
+      } else {
+        toast.error(t("saveError"));
+      }
+    }
   }
 
   function onMoveOverlay(id: string, x: number, y: number) {
@@ -620,8 +810,12 @@ export function PdfEditorClient({
     const src = bufferRef.current;
     if (!src) return;
     try {
+      let working = src;
+      if (overlaysRef.current.length > 0) {
+        working = (await bakeOverlaysIntoBuffer()) ?? src;
+      }
       const { PDFDocument } = await import("pdf-lib");
-      const pdf = await PDFDocument.load(src.slice(0));
+      const pdf = await PDFDocument.load(working.slice(0));
       const last = pdf.getPage(pdf.getPageCount() - 1);
       const { width, height } = last.getSize();
       pdf.addPage([width, height]);
@@ -637,8 +831,12 @@ export function PdfEditorClient({
       dirtyRef.current = true;
       markDirty();
       toast.success(t("pageAdd"));
-    } catch {
-      toast.error(t("saveError"));
+    } catch (err) {
+      if (err instanceof ArabicRasterizeError) {
+        toast.error(t("arabicExportFailed"));
+      } else {
+        toast.error(t("saveError"));
+      }
     }
   }
 
@@ -650,21 +848,31 @@ export function PdfEditorClient({
     }
     setDeletingPage(true);
     try {
+      let working = src;
+      const hadOverlays = overlaysRef.current.length > 0;
+      if (hadOverlays) {
+        working = (await bakeOverlaysIntoBuffer()) ?? src;
+      }
       const { PDFDocument } = await import("pdf-lib");
-      const pdf = await PDFDocument.load(src.slice(0));
+      const pdf = await PDFDocument.load(working.slice(0));
       const idx = Math.min(pageIndex, pdf.getPageCount() - 1);
       pdf.removePage(idx);
       const bytes = await pdf.save();
       const next = Uint8Array.from(bytes).buffer;
       setBufferSafe(next);
-      setOverlays((prev) =>
-        prev
-          .filter((o) => o.pageIndex !== idx)
-          .map((o) =>
-            o.pageIndex > idx ? { ...o, pageIndex: o.pageIndex - 1 } : o,
-          ),
-      );
+      if (hadOverlays) {
+        setOverlays([]);
+      } else {
+        setOverlays((prev) =>
+          prev
+            .filter((o) => o.pageIndex !== idx)
+            .map((o) =>
+              o.pageIndex > idx ? { ...o, pageIndex: o.pageIndex - 1 } : o,
+            ),
+        );
+      }
       setHistory([]);
+      setSelectedId(null);
       const count = pdf.getPageCount();
       pageCountRef.current = count;
       setPageCount(count);
@@ -672,8 +880,12 @@ export function PdfEditorClient({
       dirtyRef.current = true;
       markDirty();
       setDeletePageOpen(false);
-    } catch {
-      toast.error(t("saveError"));
+    } catch (err) {
+      if (err instanceof ArabicRasterizeError) {
+        toast.error(t("arabicExportFailed"));
+      } else {
+        toast.error(t("saveError"));
+      }
     } finally {
       setDeletingPage(false);
     }
@@ -786,7 +998,10 @@ export function PdfEditorClient({
       setPdfReadyUrl(url);
       setPdfExportPhase("ready");
       pdfExportBusyRef.current = false;
-    } catch {
+    } catch (err) {
+      if (err instanceof ArabicRasterizeError) {
+        toast.error(t("arabicExportFailed"));
+      }
       setPdfExportPhase("error");
       pdfExportBusyRef.current = false;
     }
@@ -884,6 +1099,29 @@ export function PdfEditorClient({
     return Frame;
   };
 
+  const sidePanelLabels = {
+    toggleLayers: t("toggleLayers"),
+    layersTitle: t("layersTitle"),
+    layersHint: t("layersHint"),
+    layersEmpty: t("layersEmpty"),
+    layersRemoveAll: t("layersRemoveAll"),
+    layersRemoveAllConfirm: t("layersRemoveAllConfirm"),
+    pagesTitle: t("pagesTitle"),
+    pagesEmpty: t("pagesEmpty"),
+    pageLabel: t("pageLabel"),
+    moveUp: t("moveUp"),
+    moveDown: t("moveDown"),
+    layerText: t("layerText"),
+    layerImage: t("layerImage"),
+    layerTable: t("layerTable"),
+    layerShape: t("layerShape"),
+    layerStamp: t("layerStamp"),
+    layerWhiteout: t("layerWhiteout"),
+    edit: t("editTextSave"),
+    delete: t("delete"),
+    cancel: t("cancel"),
+  };
+
   return (
     <div className="editor-mobile-shell flex h-[100dvh] flex-col bg-[#070b14] pt-[env(safe-area-inset-top)]">
       <header className="relative z-40 shrink-0 print:hidden sm:hidden">
@@ -907,6 +1145,16 @@ export function PdfEditorClient({
             </div>
           </div>
           <div className="relative flex items-center gap-0.5">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="min-h-11 min-w-11"
+              aria-expanded={mobileSideOpen}
+              aria-label={t("toggleLayers")}
+              onClick={() => setMobileSideOpen(true)}
+            >
+              <Layers className="h-4 w-4" />
+            </Button>
             <Button
               size="sm"
               variant="ghost"
@@ -1014,6 +1262,15 @@ export function PdfEditorClient({
           </div>
 
           <div className="flex items-center gap-1.5">
+            <Button
+              size="sm"
+              variant={sidePanelOpen ? "solid" : "ghost"}
+              onClick={() => setSidePanelOpen((v) => !v)}
+              aria-label={t("toggleLayers")}
+              title={t("toggleLayers")}
+            >
+              <Layers className="h-4 w-4" />
+            </Button>
             <Button
               size="sm"
               variant="ghost"
@@ -1130,7 +1387,12 @@ export function PdfEditorClient({
       />
 
       <div className="min-h-0 flex-1 overflow-auto sm:px-4 sm:pb-3 sm:pt-2">
-        <div className="editor-canvas-frame glass min-h-full overflow-auto rounded-none sm:rounded-[1.5rem]">
+        <div
+          className={`editor-canvas-frame glass mx-auto flex min-h-full max-w-[1600px] overflow-hidden rounded-none sm:rounded-[1.5rem] ${
+            locale === "ar" ? "flex-row-reverse" : "flex-row"
+          }`}
+        >
+          <div className="min-h-0 min-w-0 flex-1 overflow-auto">
           {!buffer ? (
             <div className="flex h-[60vh] flex-col items-center justify-center gap-3 px-6 text-sm text-muted">
               <LoaderCircle className="h-5 w-5 animate-spin text-accent" />
@@ -1275,6 +1537,29 @@ export function PdfEditorClient({
               />
             </>
           )}
+          </div>
+          <PdfSidePanel
+            mode="sidebar"
+            open={sidePanelOpen}
+            tab={sideTab}
+            buffer={buffer}
+            overlays={overlays}
+            pageIndex={pageIndex}
+            pageCount={pageCount}
+            selectedId={selectedId}
+            labels={sidePanelLabels}
+            onTab={setSideTab}
+            onClose={() => setSidePanelOpen(false)}
+            onSelectLayer={onSelectLayerFromPanel}
+            onEditText={onEditTextFromPanel}
+            onDeleteLayer={onDeleteLayerFromPanel}
+            onReorderLayers={onReorderLayers}
+            onRemoveAllLayers={onRemoveAllLayersForPage}
+            onSelectPage={onSelectPageFromPanel}
+            onMovePage={(from, to) => {
+              void onMovePage(from, to);
+            }}
+          />
         </div>
       </div>
 
@@ -1397,6 +1682,13 @@ export function PdfEditorClient({
               </Button>
             </div>
             <DockBtn
+              label={t("toggleLayers")}
+              active={mobileSideOpen}
+              onClick={() => setMobileSideOpen(true)}
+            >
+              <Layers className="h-4 w-4" />
+            </DockBtn>
+            <DockBtn
               label={t("delete")}
               disabled={!selectedId}
               onClick={onDeleteSelected}
@@ -1406,6 +1698,45 @@ export function PdfEditorClient({
           </div>
         </div>
       ) : null}
+
+      <PdfSidePanel
+        mode="drawer"
+        open={mobileSideOpen}
+        tab={sideTab}
+        buffer={buffer}
+        overlays={overlays}
+        pageIndex={pageIndex}
+        pageCount={pageCount}
+        selectedId={selectedId}
+        labels={sidePanelLabels}
+        onTab={setSideTab}
+        onClose={() => setMobileSideOpen(false)}
+        onSelectLayer={onSelectLayerFromPanel}
+        onEditText={onEditTextFromPanel}
+        onDeleteLayer={onDeleteLayerFromPanel}
+        onReorderLayers={onReorderLayers}
+        onRemoveAllLayers={onRemoveAllLayersForPage}
+        onSelectPage={onSelectPageFromPanel}
+        onMovePage={(from, to) => {
+          void onMovePage(from, to);
+        }}
+      />
+
+      <EditPdfTextDialog
+        open={Boolean(replaceDialog)}
+        initialText={replaceDialog?.seedText ?? ""}
+        unreadable={replaceDialog?.unreadable ?? false}
+        labels={{
+          title: t("editTextTitle"),
+          hint: t("editTextHint"),
+          unreadable: t("editTextUnreadable"),
+          placeholder: t("textPlaceholder"),
+          save: t("editTextSave"),
+          cancel: t("cancel"),
+        }}
+        onCancel={() => setReplaceDialog(null)}
+        onSubmit={submitReplaceText}
+      />
 
       <AiChatPanel
         open={aiOpen}
