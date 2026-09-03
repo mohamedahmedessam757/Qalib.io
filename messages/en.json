@@ -169,7 +169,8 @@
     "addImageHint": "Pick an image to insert at the cursor",
     "imageTooLarge": "Image is too large (max 8 MB)",
     "imageInsertFailed": "Could not insert image",
-    "imageInserted": "Image inserted"
+    "imageInserted": "Image inserted",
+    "imageCopyUnsupported": "Images can’t be copied here — use Add image to insert again"
   },
   "aiChat": {
     "title": "AI assistant",

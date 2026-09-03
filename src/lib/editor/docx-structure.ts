@@ -38,11 +38,6 @@ export type DocxStructureClipboard =
       rows: number;
       cols: number;
       matrix: string[][];
-    }
-  | {
-      kind: "image";
-      /** data URL — capped; may be empty if too large */
-      dataUrl: string;
     };
 
 const ROW_TYPES = new Set(["tableRow", "table_row"]);
@@ -237,8 +232,8 @@ export function snapshotStructureItem(
     }
     return { kind: "table", rows, cols, matrix };
   }
-  // Images: clipboard stores empty marker — paste re-prompts or no-ops safely
-  return { kind: "image", dataUrl: "" };
+  // Images need a re-upload path — never store empty fake clipboard entries.
+  return null;
 }
 
 export function pasteStructureClipboard(
@@ -255,18 +250,22 @@ export function pasteStructureClipboard(
   if (!anchor) return { ok: false, detail: "no anchor paragraph" };
 
   if (clip.kind === "paragraph") {
-    return insertParagraphAfter(editor, anchor, clip.text);
+    const text = clip.text.slice(0, MAX_CLIPBOARD_CHARS);
+    return insertParagraphAfter(editor, anchor, text);
   }
   if (clip.kind === "table") {
-    return insertTableAfter(
-      editor,
-      anchor,
-      clip.rows,
-      clip.cols,
-      clip.matrix,
-    );
+    const rows = Math.min(40, Math.max(1, Math.floor(clip.rows) || 1));
+    const cols = Math.min(20, Math.max(1, Math.floor(clip.cols) || 1));
+    const matrix = clip.matrix
+      .slice(0, rows)
+      .map((row) =>
+        row.slice(0, cols).map((cell) =>
+          String(cell ?? "").slice(0, 8_000),
+        ),
+      );
+    return insertTableAfter(editor, anchor, rows, cols, matrix);
   }
-  return { ok: false, detail: "image paste requires re-upload" };
+  return { ok: false, detail: "unsupported clipboard kind" };
 }
 
 export function duplicateStructureItem(

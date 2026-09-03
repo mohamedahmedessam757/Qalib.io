@@ -169,7 +169,8 @@
     "addImageHint": "اختر صورة لإدراجها عند المؤشر",
     "imageTooLarge": "الصورة كبيرة جدًا (الحد 8 ميجابايت)",
     "imageInsertFailed": "تعذر إدراج الصورة",
-    "imageInserted": "تم إدراج الصورة"
+    "imageInserted": "تم إدراج الصورة",
+    "imageCopyUnsupported": "لا يمكن نسخ الصور من هنا — استخدم إضافة صورة لإدراجها مجددًا"
   },
   "aiChat": {
     "title": "مساعد الذكاء",

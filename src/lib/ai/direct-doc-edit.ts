@@ -876,8 +876,19 @@ export async function insertImageFileAfter(
 ): Promise<{ ok: boolean; detail: string }> {
   const view = selectInsideParagraph(editor, afterParaId);
   if (!view) return { ok: false, detail: "unknown afterParaId or view missing" };
-  if (!file.type.startsWith("image/")) {
-    return { ok: false, detail: "file is not an image" };
+  const allowed = new Set([
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "image/webp",
+    "image/gif",
+  ]);
+  const mime = (file.type || "").toLowerCase();
+  if (!allowed.has(mime)) {
+    return { ok: false, detail: "unsupported image type" };
+  }
+  if (file.size <= 0 || file.size > 8 * 1024 * 1024) {
+    return { ok: false, detail: "image size out of range" };
   }
   return new Promise((resolve) => {
     insertImageFromFile(view, file, {

@@ -106,34 +106,36 @@ export function DocxStructurePanel({
                   </span>
                 </button>
                 {item.kind !== "image" ? (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="min-h-11 min-w-9 shrink-0 px-0.5"
-                    aria-label={labels.edit}
-                    onClick={() => onEdit(item)}
-                  >
-                    <Type className="h-3.5 w-3.5" />
-                  </Button>
+                  <>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="min-h-11 min-w-9 shrink-0 px-0.5"
+                      aria-label={labels.edit}
+                      onClick={() => onEdit(item)}
+                    >
+                      <Type className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="min-h-11 min-w-9 shrink-0 px-0.5"
+                      aria-label={labels.copy}
+                      onClick={() => onCopy(item.id)}
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="min-h-11 min-w-9 shrink-0 px-0.5"
+                      aria-label={labels.duplicate}
+                      onClick={() => onDuplicate(item.id)}
+                    >
+                      <CopyPlus className="h-3.5 w-3.5" />
+                    </Button>
+                  </>
                 ) : null}
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="min-h-11 min-w-9 shrink-0 px-0.5"
-                  aria-label={labels.copy}
-                  onClick={() => onCopy(item.id)}
-                >
-                  <Copy className="h-3.5 w-3.5" />
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="min-h-11 min-w-9 shrink-0 px-0.5"
-                  aria-label={labels.duplicate}
-                  onClick={() => onDuplicate(item.id)}
-                >
-                  <CopyPlus className="h-3.5 w-3.5" />
-                </Button>
               </li>
             );
           })}

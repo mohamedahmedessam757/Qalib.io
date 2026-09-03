@@ -778,11 +778,29 @@ export function DocxEditorClient({
     const editor = editorRef.current;
     if (!editor) return;
     if (item.paraId) editor.scrollToParaId?.(item.paraId);
-    if (item.kind === "table" && item.paraId) {
-      // Place caret then open table sheet
-      window.setTimeout(() => openSelectionSheet(), 80);
+
+    if (item.kind === "table" && item.cells?.length && item.rows && item.cols) {
+      const focus =
+        item.cells.find((c) => c.paraId === item.paraId) || item.cells[0]!;
+      setTableDraft({
+        rows: item.rows,
+        cols: item.cols,
+        focusRow: focus.row,
+        focusCol: focus.col,
+        cells: item.cells,
+      });
+      setTableSheetOpen(true);
+      setSheetOpen(false);
+      setDraft(null);
       return;
     }
+
+    if (item.kind === "table" && item.paraId) {
+      // Fallback: place caret then detect live table
+      window.setTimeout(() => openSelectionSheet(), 120);
+      return;
+    }
+
     if (item.kind === "paragraph" && item.paraId) {
       setDraft({
         paraId: item.paraId,
@@ -798,6 +816,10 @@ export function DocxEditorClient({
   function onCopyStructureItem(id: string) {
     const item = structureItems.find((x) => x.id === id);
     if (!item) return;
+    if (item.kind === "image") {
+      toast.message(t("imageCopyUnsupported"));
+      return;
+    }
     const snap = snapshotStructureItem(item, editorRef.current || undefined);
     if (!snap) {
       toast.error(t("pasteFailed"));
@@ -812,6 +834,10 @@ export function DocxEditorClient({
     const editor = editorRef.current;
     const item = structureItems.find((x) => x.id === id);
     if (!editor || !item) return;
+    if (item.kind === "image") {
+      toast.message(t("imageCopyUnsupported"));
+      return;
+    }
     const res = duplicateStructureItem(editor, item);
     if (!res.ok) {
       toast.error(t("pasteFailed"));
@@ -843,6 +869,17 @@ export function DocxEditorClient({
 
   async function onPickImageFile(file: File | undefined) {
     if (!file) return;
+    const allowed = new Set([
+      "image/png",
+      "image/jpeg",
+      "image/jpg",
+      "image/webp",
+      "image/gif",
+    ]);
+    if (!allowed.has((file.type || "").toLowerCase())) {
+      toast.error(t("imageInsertFailed"));
+      return;
+    }
     if (file.size > MAX_IMAGE_BYTES) {
       toast.error(t("imageTooLarge"));
       return;
