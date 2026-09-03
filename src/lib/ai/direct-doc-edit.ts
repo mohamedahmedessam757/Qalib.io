@@ -869,6 +869,33 @@ export async function insertImageAfter(
   });
 }
 
+export async function insertImageFileAfter(
+  editor: DocxCanvasHandle,
+  afterParaId: string,
+  file: File,
+): Promise<{ ok: boolean; detail: string }> {
+  const view = selectInsideParagraph(editor, afterParaId);
+  if (!view) return { ok: false, detail: "unknown afterParaId or view missing" };
+  if (!file.type.startsWith("image/")) {
+    return { ok: false, detail: "file is not an image" };
+  }
+  return new Promise((resolve) => {
+    insertImageFromFile(view, file, {
+      onError: (error) => {
+        resolve({
+          ok: false,
+          detail:
+            error instanceof Error ? error.message : "insertImageFromFile failed",
+        });
+      },
+      onInserted: () => {
+        highlightParagraph(editor, afterParaId);
+        resolve({ ok: true, detail: `inserted image after ${afterParaId}` });
+      },
+    });
+  });
+}
+
 export function addCommentOnParagraph(
   editor: DocxCanvasHandle,
   paraId: string,

@@ -2,11 +2,12 @@
 
 import { AnimatePresence, motion } from "motion/react";
 import { Check, Trash2, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import type { TableCellInfo, TableGrid } from "@/lib/editor/read-table-grid";
 
 const easeOut = [0.23, 1, 0.32, 1] as const;
+const ARABIC_RE = /[\u0600-\u06FF]/;
 
 export type TableSelectionDraft = TableGrid;
 
@@ -20,6 +21,11 @@ function buildCellMatrix(grid: TableGrid): string[][] {
     }
   }
   return matrix;
+}
+
+function cellDir(value: string): "rtl" | "ltr" | "auto" {
+  if (!value.trim()) return "auto";
+  return ARABIC_RE.test(value) ? "rtl" : "ltr";
 }
 
 export function TableSelectionEditSheet({
@@ -79,6 +85,11 @@ export function TableSelectionEditSheet({
     window.setTimeout(() => cellRefs.current.get(key)?.focus(), 0);
   }, []);
 
+  const gridRtl = useMemo(() => {
+    const sample = matrix.flat().join(" ").slice(0, 400);
+    return ARABIC_RE.test(sample);
+  }, [matrix]);
+
   const handleKeyDown = useCallback(
     (
       e: React.KeyboardEvent<HTMLTextAreaElement>,
@@ -95,17 +106,49 @@ export function TableSelectionEditSheet({
         focusCell(Math.floor(flat / cols), flat % cols);
         return;
       }
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        if (row < rows - 1) focusCell(row + 1, col);
+        else {
+          const next = row * cols + col + 1;
+          if (next < rows * cols) {
+            focusCell(Math.floor(next / cols), next % cols);
+          }
+        }
+        return;
+      }
       const el = e.currentTarget;
-      if (e.key === "ArrowDown" && el.selectionStart === el.value.length) {
+      const atStart = el.selectionStart === 0 && el.selectionEnd === 0;
+      const atEnd =
+        el.selectionStart === el.value.length &&
+        el.selectionEnd === el.value.length;
+
+      if (e.key === "ArrowDown" && atEnd) {
         e.preventDefault();
         if (row < rows - 1) focusCell(row + 1, col);
       }
-      if (e.key === "ArrowUp" && el.selectionStart === 0) {
+      if (e.key === "ArrowUp" && atStart) {
         e.preventDefault();
         if (row > 0) focusCell(row - 1, col);
       }
+      if (e.key === "ArrowRight" && atEnd) {
+        e.preventDefault();
+        if (gridRtl) {
+          if (col > 0) focusCell(row, col - 1);
+        } else if (col < cols - 1) {
+          focusCell(row, col + 1);
+        }
+      }
+      if (e.key === "ArrowLeft" && atStart) {
+        e.preventDefault();
+        if (gridRtl) {
+          if (col < cols - 1) focusCell(row, col + 1);
+        } else if (col > 0) {
+          focusCell(row, col - 1);
+        }
+      }
     },
-    [draft, focusCell],
+    [draft, focusCell, gridRtl],
   );
 
   if (!draft) return null;
@@ -155,12 +198,15 @@ export function TableSelectionEditSheet({
               </Button>
             </div>
 
-            <div className="max-h-[50dvh] overflow-x-auto overflow-y-auto rounded-xl border border-line bg-white/[0.02] p-2">
+            <div
+              className="max-h-[50dvh] overflow-x-auto overflow-y-auto rounded-xl border border-line bg-white/[0.03] p-1.5"
+              dir={gridRtl ? "rtl" : "ltr"}
+            >
               <div
-                className="grid gap-1.5"
+                className="grid gap-px overflow-hidden rounded-lg border border-line bg-line"
                 style={{
-                  gridTemplateColumns: `repeat(${draft.cols}, minmax(96px, 1fr))`,
-                  minWidth: `${draft.cols * 104}px`,
+                  gridTemplateColumns: `repeat(${draft.cols}, minmax(104px, 1fr))`,
+                  minWidth: `${Math.max(draft.cols * 112, 240)}px`,
                 }}
               >
                 {matrix.map((row, rowIdx) =>
@@ -176,7 +222,7 @@ export function TableSelectionEditSheet({
                           else cellRefs.current.delete(key);
                         }}
                         value={value}
-                        dir="auto"
+                        dir={cellDir(value)}
                         rows={2}
                         placeholder={labels.placeholder}
                         onFocus={() => {
@@ -189,10 +235,10 @@ export function TableSelectionEditSheet({
                           next[rowIdx][colIdx] = e.target.value;
                           setMatrix(next);
                         }}
-                        className={`min-h-[3.25rem] resize-none rounded-xl border px-2 py-2 text-sm outline-none transition-[border-color,box-shadow] ${
+                        className={`min-h-[3.5rem] resize-none border-0 px-2 py-2 text-sm outline-none transition-[box-shadow,background-color] ${
                           isFocus
-                            ? "border-accent/50 bg-white/8 shadow-[0_0_0_2px_rgba(45,212,191,0.12)]"
-                            : "border-line bg-white/5"
+                            ? "bg-accent/15 shadow-[inset_0_0_0_2px_rgba(45,212,191,0.45)]"
+                            : "bg-[#0a1220]"
                         }`}
                       />
                     );

@@ -19,6 +19,8 @@ import {
   FileDown,
   FilePlus2,
   Frame,
+  ImagePlus,
+  Layers,
   ListTree,
   LoaderCircle,
   Minus,
@@ -51,6 +53,18 @@ import {
   applyTextWatermark,
   type PageFrameStyle,
 } from "@/lib/docx/decor";
+import {
+  insertImageFileAfter,
+  listDocumentParagraphs,
+} from "@/lib/ai/direct-doc-edit";
+import {
+  collectDocxStructure,
+  duplicateStructureItem,
+  pasteStructureClipboard,
+  snapshotStructureItem,
+  type DocxStructureClipboard,
+  type DocxStructureItem,
+} from "@/lib/editor/docx-structure";
 import { AiChatPanel } from "@/components/ai/AiChatPanel";
 import {
   SelectionEditSheet,
@@ -66,11 +80,17 @@ import {
   type ParagraphJumpItem,
 } from "./ParagraphJumpSheet";
 import {
+  DocxSidePanel,
+  type DocxSideTab,
+} from "./DocxSidePanel";
+import {
   ExportPdfDialog,
   type ExportPdfFormValues,
   type ExportPdfPhase,
 } from "./ExportPdfDialog";
 import type { DocxCanvasHandle } from "./DocxCanvas";
+
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
 function EditorChunkLoading() {
   const t = useTranslations("editor");
@@ -146,6 +166,18 @@ export function DocxEditorClient({
   const [aiOpen, setAiOpen] = useState(false);
   const [zoomPct, setZoomPct] = useState(100);
   const [mobileHasSelection, setMobileHasSelection] = useState(false);
+  const [sideOpen, setSideOpen] = useState(!isMobile);
+  const [sideTab, setSideTab] = useState<DocxSideTab>("structure");
+  const [mobileSideOpen, setMobileSideOpen] = useState(false);
+  const [structureItems, setStructureItems] = useState<DocxStructureItem[]>(
+    [],
+  );
+  const [selectedStructureId, setSelectedStructureId] = useState<string | null>(
+    null,
+  );
+  const [pageIndex, setPageIndex] = useState(0);
+  const [pageCount, setPageCount] = useState(1);
+  const [clipboardVersion, setClipboardVersion] = useState(0);
   const [pdfExportOpen, setPdfExportOpen] = useState(false);
   const [pdfExportPhase, setPdfExportPhase] = useState<ExportPdfPhase>("form");
   const [pdfProgress, setPdfProgress] = useState({ current: 0, total: 0 });
@@ -160,9 +192,12 @@ export function DocxEditorClient({
   const dirtyRef = useRef(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const structureTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pdfExportBusyRef = useRef(false);
   const pdfReadyUrlRef = useRef<string | null>(null);
   const lastExportValuesRef = useRef<ExportPdfFormValues | null>(null);
+  const structureClipboardRef = useRef<DocxStructureClipboard | null>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     return () => {
@@ -288,6 +323,24 @@ export function DocxEditorClient({
     return () => clearInterval(id);
   }, [persist]);
 
+  const refreshStructure = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    try {
+      setStructureItems(collectDocxStructure(editor));
+      const total = Math.max(1, editor.getTotalPages?.() || 1);
+      setPageCount(total);
+    } catch {
+      /* ignore transient view gaps */
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (structureTimer.current) clearTimeout(structureTimer.current);
+    };
+  }, []);
+
   const markDirty = useCallback(() => {
     dirtyRef.current = true;
     setSaveState("idle");
@@ -295,7 +348,11 @@ export function DocxEditorClient({
     saveTimer.current = setTimeout(() => {
       void persist();
     }, 2500);
-  }, [persist]);
+    if (structureTimer.current) clearTimeout(structureTimer.current);
+    structureTimer.current = setTimeout(() => {
+      refreshStructure();
+    }, 400);
+  }, [persist, refreshStructure]);
 
   const openSelectionSheet = useCallback(() => {
     const editor = editorRef.current;
@@ -328,18 +385,25 @@ export function DocxEditorClient({
     if (!isMobile) return;
     if (selectionTimer.current) clearTimeout(selectionTimer.current);
     selectionTimer.current = setTimeout(() => {
-      const info = editorRef.current?.getSelectionInfo();
+      const editor = editorRef.current;
+      const info = editor?.getSelectionInfo();
       if (!info?.paraId) {
         setMobileHasSelection(false);
         return;
       }
-      const selected = Boolean(info.selectedText?.trim());
+      const inTable = Boolean(
+        readTableGridFromEditor(
+          () => editor?.getEditorRef()?.getView() ?? null,
+        ),
+      );
+      const selected = Boolean(info.selectedText?.trim()) || inTable;
       setMobileHasSelection(selected);
+      // Never stack the paragraph sheet on top of an open table sheet.
+      if (tableSheetOpen || sheetOpen) return;
       if (!selected) return;
-      // Keep sheet open if already editing; otherwise open for the selection
-      if (!sheetOpen) openSelectionSheet();
+      openSelectionSheet();
     }, 280);
-  }, [isMobile, openSelectionSheet, sheetOpen]);
+  }, [isMobile, openSelectionSheet, sheetOpen, tableSheetOpen]);
 
   function onZoomOut() {
     const editor = editorRef.current;
@@ -689,6 +753,171 @@ export function DocxEditorClient({
     markDirty();
   }
 
+  function onSelectPageFromPanel(idx: number) {
+    setPageIndex(idx);
+    editorRef.current?.scrollToPage?.(idx + 1);
+    if (isMobile) setMobileSideOpen(false);
+  }
+
+  function onSelectStructureItem(id: string) {
+    setSelectedStructureId(id);
+    const item = structureItems.find((x) => x.id === id);
+    if (!item) return;
+    const editor = editorRef.current;
+    if (!editor) return;
+    if (item.paraId) {
+      editor.scrollToParaId?.(item.paraId);
+    } else {
+      editor.scrollToPage?.(item.page);
+    }
+    setPageIndex(Math.max(0, item.page - 1));
+  }
+
+  function onEditStructureItem(item: DocxStructureItem) {
+    setSelectedStructureId(item.id);
+    const editor = editorRef.current;
+    if (!editor) return;
+    if (item.paraId) editor.scrollToParaId?.(item.paraId);
+    if (item.kind === "table" && item.paraId) {
+      // Place caret then open table sheet
+      window.setTimeout(() => openSelectionSheet(), 80);
+      return;
+    }
+    if (item.kind === "paragraph" && item.paraId) {
+      setDraft({
+        paraId: item.paraId,
+        paragraphText: item.text || "",
+        selectedText: "",
+      });
+      setSheetOpen(true);
+      setTableSheetOpen(false);
+      setTableDraft(null);
+    }
+  }
+
+  function onCopyStructureItem(id: string) {
+    const item = structureItems.find((x) => x.id === id);
+    if (!item) return;
+    const snap = snapshotStructureItem(item, editorRef.current || undefined);
+    if (!snap) {
+      toast.error(t("pasteFailed"));
+      return;
+    }
+    structureClipboardRef.current = snap;
+    setClipboardVersion((v) => v + 1);
+    toast.message(t("itemCopied"));
+  }
+
+  function onDuplicateStructureItem(id: string) {
+    const editor = editorRef.current;
+    const item = structureItems.find((x) => x.id === id);
+    if (!editor || !item) return;
+    const res = duplicateStructureItem(editor, item);
+    if (!res.ok) {
+      toast.error(t("pasteFailed"));
+      return;
+    }
+    toast.success(t("itemDuplicated"));
+    markDirty();
+    refreshStructure();
+  }
+
+  function onPasteStructureItem() {
+    const editor = editorRef.current;
+    const clip = structureClipboardRef.current;
+    if (!editor || !clip) return;
+    const selected = structureItems.find((x) => x.id === selectedStructureId);
+    const after =
+      selected?.paraId ||
+      editor.getSelectionInfo?.()?.paraId ||
+      listDocumentParagraphs(editor).at(-1)?.paraId ||
+      null;
+    const res = pasteStructureClipboard(editor, clip, after);
+    if (!res.ok) {
+      toast.error(t("pasteFailed"));
+      return;
+    }
+    markDirty();
+    refreshStructure();
+  }
+
+  async function onPickImageFile(file: File | undefined) {
+    if (!file) return;
+    if (file.size > MAX_IMAGE_BYTES) {
+      toast.error(t("imageTooLarge"));
+      return;
+    }
+    const editor = editorRef.current;
+    if (!editor) return;
+    const after =
+      editor.getSelectionInfo?.()?.paraId ||
+      listDocumentParagraphs(editor).at(-1)?.paraId ||
+      null;
+    if (!after) {
+      toast.message(t("editSelectionHint"));
+      return;
+    }
+    const res = await insertImageFileAfter(editor, after, file);
+    if (!res.ok) {
+      toast.error(t("imageInsertFailed"));
+      return;
+    }
+    toast.success(t("imageInserted"));
+    markDirty();
+    refreshStructure();
+  }
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      if (
+        tag === "input" ||
+        tag === "textarea" ||
+        target?.isContentEditable
+      ) {
+        return;
+      }
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
+      const key = e.key.toLowerCase();
+      if (key === "c" && selectedStructureId) {
+        e.preventDefault();
+        onCopyStructureItem(selectedStructureId);
+      } else if (key === "v" && structureClipboardRef.current) {
+        e.preventDefault();
+        onPasteStructureItem();
+      } else if (key === "d" && selectedStructureId) {
+        e.preventDefault();
+        onDuplicateStructureItem(selectedStructureId);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handlers use latest refs/state
+  }, [selectedStructureId, structureItems, clipboardVersion]);
+
+  const canPasteStructure =
+    clipboardVersion > 0 && Boolean(structureClipboardRef.current);
+
+  const sidePanelLabels = {
+    toggleStructure: t("toggleStructure"),
+    structureTitle: t("structureTitle"),
+    structureHint: t("structureHint"),
+    structureEmpty: t("structureEmpty"),
+    pagesTitle: t("pagesTitle"),
+    pagesEmpty: t("pagesEmpty"),
+    pageLabel: t("pageLabel"),
+    layerParagraph: t("layerParagraph"),
+    layerTable: t("layerTable"),
+    layerImage: t("layerImage"),
+    edit: t("editShort"),
+    copy: t("copyItem"),
+    duplicate: t("duplicateItem"),
+    paste: t("pasteItem"),
+    cancel: t("cancel"),
+  };
+
   const statusLabel =
     saveState === "saving" || pending
       ? tc("saving")
@@ -722,6 +951,16 @@ export function DocxEditorClient({
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-0.5">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="min-h-11 min-w-11 px-2"
+              aria-expanded={mobileSideOpen}
+              aria-label={t("toggleStructure")}
+              onClick={() => setMobileSideOpen(true)}
+            >
+              <Layers className="h-4 w-4" />
+            </Button>
             <Button
               size="sm"
               variant="ghost"
@@ -772,6 +1011,17 @@ export function DocxEditorClient({
                   >
                     <FileDown className="h-4 w-4" />
                     {tc("exportPdf")}
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 px-3 py-3 text-start text-sm hover:bg-white/8"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      imageInputRef.current?.click();
+                    }}
+                  >
+                    <ImagePlus className="h-4 w-4" />
+                    {t("addImage")}
                   </button>
                   <button
                     type="button"
@@ -879,6 +1129,24 @@ export function DocxEditorClient({
             <Button
               size="sm"
               variant="ghost"
+              onClick={() => imageInputRef.current?.click()}
+              title={t("addImage")}
+              aria-label={t("addImage")}
+            >
+              <ImagePlus className="h-4 w-4" />
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setSideOpen((v) => !v)}
+              title={t("toggleStructure")}
+              aria-label={t("toggleStructure")}
+            >
+              <Layers className="h-4 w-4" />
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
               onClick={() => onApplyFrame("double")}
               title={t("pageFrame")}
             >
@@ -950,7 +1218,8 @@ export function DocxEditorClient({
       </header>
 
       <div className="relative z-0 min-h-0 flex-1 overflow-hidden pb-[calc(3.75rem+env(safe-area-inset-bottom))] sm:px-4 sm:pb-3 sm:pt-3">
-        <div className="editor-canvas-frame glass h-full overflow-hidden rounded-none sm:rounded-[1.5rem]">
+        <div className="editor-canvas-frame glass flex h-full overflow-hidden rounded-none sm:rounded-[1.5rem]">
+          <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
           {!buffer ? (
             <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-sm text-muted">
               <LoaderCircle className="h-5 w-5 animate-spin text-accent" />
@@ -976,12 +1245,72 @@ export function DocxEditorClient({
                 window.setTimeout(() => {
                   const z = editorRef.current?.getZoomLevel?.() ?? 1;
                   setZoomPct(Math.round(z * 100));
+                  refreshStructure();
                 }, 100);
               }}
             />
           )}
+          </div>
+          <DocxSidePanel
+            mode="sidebar"
+            open={sideOpen && !isMobile}
+            tab={sideTab}
+            pageCount={pageCount}
+            currentPage={pageIndex}
+            structureItems={structureItems}
+            selectedId={selectedStructureId}
+            canPaste={canPasteStructure}
+            labels={sidePanelLabels}
+            onTab={setSideTab}
+            onClose={() => setSideOpen(false)}
+            onSelectPage={onSelectPageFromPanel}
+            onSelectItem={onSelectStructureItem}
+            onEditItem={onEditStructureItem}
+            onCopyItem={onCopyStructureItem}
+            onDuplicateItem={onDuplicateStructureItem}
+            onPasteItem={onPasteStructureItem}
+          />
         </div>
       </div>
+
+      <input
+        ref={imageInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/gif"
+        className="sr-only"
+        aria-hidden
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          void onPickImageFile(file);
+          e.target.value = "";
+        }}
+      />
+
+      <DocxSidePanel
+        mode="drawer"
+        open={mobileSideOpen && isMobile}
+        tab={sideTab}
+        pageCount={pageCount}
+        currentPage={pageIndex}
+        structureItems={structureItems}
+        selectedId={selectedStructureId}
+        canPaste={canPasteStructure}
+        labels={sidePanelLabels}
+        onTab={setSideTab}
+        onClose={() => setMobileSideOpen(false)}
+        onSelectPage={onSelectPageFromPanel}
+        onSelectItem={(id) => {
+          onSelectStructureItem(id);
+          setMobileSideOpen(false);
+        }}
+        onEditItem={(item) => {
+          onEditStructureItem(item);
+          setMobileSideOpen(false);
+        }}
+        onCopyItem={onCopyStructureItem}
+        onDuplicateItem={onDuplicateStructureItem}
+        onPasteItem={onPasteStructureItem}
+      />
 
       {/* Mobile bottom dock — like a native app */}
       <nav
@@ -1009,10 +1338,11 @@ export function DocxEditorClient({
           <button
             type="button"
             className="flex min-h-11 min-w-11 flex-col items-center justify-center gap-0.5 rounded-xl text-muted active:bg-white/8"
-            onClick={onZoomIn}
-            aria-label={t("zoomIn")}
+            onClick={() => imageInputRef.current?.click()}
+            aria-label={t("addImage")}
           >
-            <Plus className="h-4 w-4" />
+            <ImagePlus className="h-4 w-4" />
+            <span className="text-[9px]">{t("addImage")}</span>
           </button>
           <button
             type="button"

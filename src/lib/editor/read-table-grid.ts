@@ -17,7 +17,18 @@ export type TableGrid = {
   cells: TableCellInfo[];
 };
 
-const CELL_TYPES = new Set(["table_cell", "table_header"]);
+/** Eigenpal uses camelCase; some PM schemas use snake_case — accept both. */
+const ROW_TYPES = new Set(["tableRow", "table_row"]);
+const CELL_TYPES = new Set([
+  "tableCell",
+  "table_cell",
+  "tableHeader",
+  "table_header",
+]);
+
+function isTableNode(name: string) {
+  return name === "table";
+}
 
 function findTableFromSelection(
   view: EditorView,
@@ -25,7 +36,7 @@ function findTableFromSelection(
   const { $from } = view.state.selection;
   for (let depth = $from.depth; depth >= 0; depth -= 1) {
     const node = $from.node(depth);
-    if (node.type.name === "table") {
+    if (isTableNode(node.type.name)) {
       return { table: node, tablePos: $from.before(depth) };
     }
   }
@@ -41,7 +52,8 @@ function paragraphInCell(cell: PmNode): { paraId: string; text: string } | null 
     if (!paraId) return true;
     hit = {
       paraId,
-      text: getVanillaNodeText(node),
+      // Empty cells still need a paraId so the grid can edit them.
+      text: getVanillaNodeText(node) || "",
     };
     return false;
   });
@@ -72,7 +84,7 @@ export function readTableGridFromView(view: EditorView): TableGrid | null {
   let maxCols = 0;
 
   found.table.forEach((rowNode) => {
-    if (rowNode.type.name !== "table_row") return;
+    if (!ROW_TYPES.has(rowNode.type.name)) return;
     let colIndex = 0;
     rowNode.forEach((cellNode) => {
       if (!CELL_TYPES.has(cellNode.type.name)) return;
@@ -119,4 +131,11 @@ export function readTableGridFromEditor(
   const view = getView();
   if (!view) return null;
   return readTableGridFromView(view);
+}
+
+/** True when the current selection is inside a table (any schema naming). */
+export function isSelectionInTable(
+  getView: () => EditorView | null | undefined,
+): boolean {
+  return Boolean(readTableGridFromEditor(getView));
 }
