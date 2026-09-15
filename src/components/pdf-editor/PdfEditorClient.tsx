@@ -49,6 +49,7 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { AiChatPanel } from "@/components/ai/AiChatPanel";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { PDF_MIME } from "@/lib/documents";
+import { EDITOR_IMAGE_ACCEPT } from "@/lib/editor/normalize-editor-image";
 import {
   canSharePdfFiles,
   createPdfObjectUrl,
@@ -1586,19 +1587,32 @@ export function PdfEditorClient({
       <input
         ref={imageInputRef}
         type="file"
-        accept="image/png,image/jpeg,image/webp"
+        accept={EDITOR_IMAGE_ACCEPT}
         className="sr-only"
         onChange={(e) => {
           const file = e.target.files?.[0];
-          if (!file) return;
-          const reader = new FileReader();
-          reader.onload = () => {
-            pendingImageRef.current = String(reader.result || "");
-            setTool("image");
-            toast.message(t("hint"));
-          };
-          reader.readAsDataURL(file);
           e.target.value = "";
+          if (!file) return;
+          void (async () => {
+            try {
+              const { normalizeEditorImageFile } = await import(
+                "@/lib/editor/normalize-editor-image"
+              );
+              const normalized = await normalizeEditorImageFile(file, {
+                fromImagePicker: true,
+              });
+              pendingImageRef.current = normalized.dataUrl;
+              setTool("image");
+              toast.message(t("hint"));
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : "";
+              if (msg === "IMAGE_TOO_LARGE") {
+                toast.error(te("imageTooLarge"));
+              } else {
+                toast.error(te("imageInsertFailed"));
+              }
+            }
+          })();
         }}
       />
 

@@ -65,6 +65,10 @@ import {
   type DocxStructureClipboard,
   type DocxStructureItem,
 } from "@/lib/editor/docx-structure";
+import {
+  EDITOR_IMAGE_ACCEPT,
+  MAX_EDITOR_IMAGE_BYTES,
+} from "@/lib/editor/normalize-editor-image";
 import { AiChatPanel } from "@/components/ai/AiChatPanel";
 import {
   SelectionEditSheet,
@@ -90,7 +94,11 @@ import {
 } from "./ExportPdfDialog";
 import type { DocxCanvasHandle } from "./DocxCanvas";
 
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+/** Force full DOCX repack so newly inserted images are written to word/media. */
+async function saveDocxFully(editor: DocxCanvasHandle | null) {
+  if (!editor?.save) return null;
+  return editor.save({ selective: false });
+}
 
 function EditorChunkLoading() {
   const t = useTranslations("editor");
@@ -295,7 +303,7 @@ export function DocxEditorClient({
   }, [documentId, t, tc, title]);
 
   const persist = useCallback(async () => {
-    const out = await editorRef.current?.save();
+    const out = await saveDocxFully(editorRef.current);
     if (!out) return false;
     setSaveState("saving");
 
@@ -428,15 +436,21 @@ export function DocxEditorClient({
     }, 80);
   }
 
-  function onApplyFrame(style: PageFrameStyle) {
+  async function onApplyFrame(style: PageFrameStyle) {
     setMenuOpen(false);
     const editor = editorRef.current;
-    const doc = editor?.getDocument?.();
-    if (!editor || !doc) {
+    if (!editor) {
       toast.error(t("applyError"));
       return;
     }
     try {
+      // Embed any pending image media before mutating + reloading the package.
+      await saveDocxFully(editor);
+      const doc = editor.getDocument?.();
+      if (!doc) {
+        toast.error(t("applyError"));
+        return;
+      }
       const next = applyPageFrame(doc, style);
       editor.loadDocument(next);
       markDirty();
@@ -446,17 +460,22 @@ export function DocxEditorClient({
     }
   }
 
-  function onApplyWatermark() {
+  async function onApplyWatermark() {
     setMenuOpen(false);
     const editor = editorRef.current;
-    const doc = editor?.getDocument?.();
-    if (!editor || !doc) {
+    if (!editor) {
       toast.error(t("applyError"));
       return;
     }
     const text = window.prompt(t("watermark"), "DRAFT");
     if (text === null) return;
     try {
+      await saveDocxFully(editor);
+      const doc = editor.getDocument?.();
+      if (!doc) {
+        toast.error(t("applyError"));
+        return;
+      }
       const next = applyTextWatermark(doc, text.trim() || null);
       editor.loadDocument(next);
       markDirty();
@@ -505,7 +524,7 @@ export function DocxEditorClient({
 
   async function onDownload() {
     setMenuOpen(false);
-    const out = await editorRef.current?.save();
+    const out = await saveDocxFully(editorRef.current);
     if (!out) return;
     const blob = new Blob([out], { type: DOCX_MIME });
     const url = URL.createObjectURL(blob);
@@ -869,21 +888,6 @@ export function DocxEditorClient({
 
   async function onPickImageFile(file: File | undefined) {
     if (!file) return;
-    const allowed = new Set([
-      "image/png",
-      "image/jpeg",
-      "image/jpg",
-      "image/webp",
-      "image/gif",
-    ]);
-    if (!allowed.has((file.type || "").toLowerCase())) {
-      toast.error(t("imageInsertFailed"));
-      return;
-    }
-    if (file.size > MAX_IMAGE_BYTES) {
-      toast.error(t("imageTooLarge"));
-      return;
-    }
     const editor = editorRef.current;
     if (!editor) return;
     const after =
@@ -896,7 +900,14 @@ export function DocxEditorClient({
     }
     const res = await insertImageFileAfter(editor, after, file);
     if (!res.ok) {
-      toast.error(t("imageInsertFailed"));
+      if (
+        res.detail === "IMAGE_TOO_LARGE" ||
+        file.size > MAX_EDITOR_IMAGE_BYTES
+      ) {
+        toast.error(t("imageTooLarge"));
+      } else {
+        toast.error(t("imageInsertFailed"));
+      }
       return;
     }
     toast.success(t("imageInserted"));
@@ -1313,7 +1324,7 @@ export function DocxEditorClient({
       <input
         ref={imageInputRef}
         type="file"
-        accept="image/png,image/jpeg,image/webp,image/gif"
+        accept={EDITOR_IMAGE_ACCEPT}
         className="sr-only"
         aria-hidden
         onChange={(e) => {
