@@ -11,6 +11,7 @@ import {
   FileUp,
   FolderOpen,
   LoaderCircle,
+  Copy,
   Pencil,
   Trash2,
   Upload,
@@ -106,6 +107,7 @@ export function DocumentsClient({ initialDocs }: { initialDocs: Doc[] }) {
   );
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
   const [createType, setCreateType] = useState<"docx" | "pdf" | "xlsx" | null>(
     null,
   );
@@ -261,8 +263,44 @@ export function DocumentsClient({ initialDocs }: { initialDocs: Doc[] }) {
     }
   }
 
+  async function onDuplicate(doc: Doc) {
+    setDuplicatingId(doc.id);
+    try {
+      const res = await fetch(`/api/documents/${doc.id}/duplicate`, {
+        method: "POST",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || t("duplicateError"));
+      const created = json.document as {
+        id: string;
+        title: string;
+        byteSize: number;
+        mimeType: string;
+      };
+      setDocs((prev) => [
+        {
+          id: created.id,
+          title: created.title,
+          byteSize: created.byteSize,
+          mimeType: created.mimeType,
+          updatedAt: new Date().toISOString(),
+        },
+        ...prev,
+      ]);
+      toast.success(t("duplicateSuccess"));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t("duplicateError"));
+    } finally {
+      setDuplicatingId(null);
+    }
+  }
+
   const busy =
-    uploading || creating !== null || renamingId !== null || deletingId !== null;
+    uploading ||
+    creating !== null ||
+    renamingId !== null ||
+    deletingId !== null ||
+    duplicatingId !== null;
 
   return (
     <div>
@@ -401,7 +439,9 @@ export function DocumentsClient({ initialDocs }: { initialDocs: Doc[] }) {
               const pdf = isPdfMime(doc.mimeType);
               const xlsx = isXlsxMime(doc.mimeType);
               const rowBusy =
-                deletingId === doc.id || renamingId === doc.id;
+                deletingId === doc.id ||
+                renamingId === doc.id ||
+                duplicatingId === doc.id;
               return (
                 <motion.li
                   key={doc.id}
@@ -431,7 +471,7 @@ export function DocumentsClient({ initialDocs }: { initialDocs: Doc[] }) {
                         className="mt-1 font-mono text-xs text-muted"
                         suppressHydrationWarning
                       >
-                        {pdf ? "PDF" : "Word"} · {t("updated")}:{" "}
+                        {pdf ? "PDF" : xlsx ? "Excel" : "Word"} · {t("updated")}:{" "}
                         {new Date(doc.updatedAt).toLocaleString(undefined, {
                           dateStyle: "medium",
                           timeStyle: "short",
@@ -440,6 +480,21 @@ export function DocumentsClient({ initialDocs }: { initialDocs: Doc[] }) {
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-1 sm:justify-end">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="min-h-11 min-w-11"
+                      disabled={rowBusy || busy}
+                      aria-label={t("duplicate")}
+                      title={t("duplicate")}
+                      onClick={() => void onDuplicate(doc)}
+                    >
+                      {duplicatingId === doc.id ? (
+                        <LoaderCircle className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Copy className="h-4 w-4" />
+                      )}
+                    </Button>
                     <Button
                       variant="ghost"
                       size="sm"
