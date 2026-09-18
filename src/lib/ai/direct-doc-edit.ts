@@ -809,48 +809,13 @@ export function insertTableAfter(
   };
 }
 
-export async function insertImageAfter(
+async function insertNormalizedImageFile(
   editor: DocxCanvasHandle,
   afterParaId: string,
-  src: string,
+  file: File,
 ): Promise<{ ok: boolean; detail: string }> {
   const view = selectInsideParagraph(editor, afterParaId);
   if (!view) return { ok: false, detail: "unknown afterParaId or view missing" };
-
-  let file: File;
-  try {
-    if (src.startsWith("data:")) {
-      const res = await fetch(src);
-      const blob = await res.blob();
-      const ext = blob.type.includes("png")
-        ? "png"
-        : blob.type.includes("jpeg") || blob.type.includes("jpg")
-          ? "jpg"
-          : blob.type.includes("webp")
-            ? "webp"
-            : "img";
-      file = new File([blob], `ai-image.${ext}`, {
-        type: blob.type || "image/png",
-      });
-    } else {
-      const url = new URL(src);
-      if (!/^https?:$/.test(url.protocol)) {
-        return { ok: false, detail: "image src must be https URL or data URL" };
-      }
-      const res = await fetch(url.toString());
-      if (!res.ok) return { ok: false, detail: `image fetch failed: ${res.status}` };
-      const blob = await res.blob();
-      if (!blob.type.startsWith("image/")) {
-        return { ok: false, detail: "URL did not return an image" };
-      }
-      file = new File([blob], "ai-image", { type: blob.type });
-    }
-  } catch (err) {
-    return {
-      ok: false,
-      detail: err instanceof Error ? err.message : "image load failed",
-    };
-  }
 
   return new Promise((resolve) => {
     insertImageFromFile(view, file, {
@@ -867,6 +832,87 @@ export async function insertImageAfter(
       },
     });
   });
+}
+
+export async function insertImageAfter(
+  editor: DocxCanvasHandle,
+  afterParaId: string,
+  src: string,
+): Promise<{ ok: boolean; detail: string }> {
+  const view = selectInsideParagraph(editor, afterParaId);
+  if (!view) return { ok: false, detail: "unknown afterParaId or view missing" };
+
+  let raw: File;
+  try {
+    if (src.startsWith("data:")) {
+      const res = await fetch(src);
+      const blob = await res.blob();
+      const ext = blob.type.includes("png")
+        ? "png"
+        : blob.type.includes("jpeg") || blob.type.includes("jpg")
+          ? "jpg"
+          : blob.type.includes("webp")
+            ? "webp"
+            : "img";
+      raw = new File([blob], `ai-image.${ext}`, {
+        type: blob.type || "image/png",
+      });
+    } else {
+      const url = new URL(src);
+      if (!/^https?:$/.test(url.protocol)) {
+        return { ok: false, detail: "image src must be https URL or data URL" };
+      }
+      const res = await fetch(url.toString());
+      if (!res.ok) return { ok: false, detail: `image fetch failed: ${res.status}` };
+      const blob = await res.blob();
+      if (!blob.type.startsWith("image/") || blob.type === "image/svg+xml") {
+        return { ok: false, detail: "URL did not return a safe image" };
+      }
+      raw = new File([blob], "ai-image", { type: blob.type });
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      detail: err instanceof Error ? err.message : "image load failed",
+    };
+  }
+
+  try {
+    const { normalizeEditorImageFile } = await import(
+      "@/lib/editor/normalize-editor-image"
+    );
+    const normalized = await normalizeEditorImageFile(raw, {
+      fromImagePicker: true,
+    });
+    return insertNormalizedImageFile(editor, afterParaId, normalized.file);
+  } catch (err) {
+    return {
+      ok: false,
+      detail: err instanceof Error ? err.message : "image normalize failed",
+    };
+  }
+}
+
+export async function insertImageFileAfter(
+  editor: DocxCanvasHandle,
+  afterParaId: string,
+  file: File,
+): Promise<{ ok: boolean; detail: string }> {
+  const view = selectInsideParagraph(editor, afterParaId);
+  if (!view) return { ok: false, detail: "unknown afterParaId or view missing" };
+
+  try {
+    const { normalizeEditorImageFile } = await import(
+      "@/lib/editor/normalize-editor-image"
+    );
+    const normalized = await normalizeEditorImageFile(file, {
+      fromImagePicker: true,
+    });
+    return insertNormalizedImageFile(editor, afterParaId, normalized.file);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "image normalize failed";
+    return { ok: false, detail: msg };
+  }
 }
 
 export function addCommentOnParagraph(

@@ -3,127 +3,77 @@
 import { AnimatePresence, motion } from "motion/react";
 import { Layers, PanelBottom, X } from "lucide-react";
 import { Button } from "@/components/ui/Button";
-import { PdfLayersPanel } from "./PdfLayersPanel";
-import { PdfPagesPanel } from "./PdfPagesPanel";
-import type { PdfOverlay, TextOverlay } from "@/lib/pdf/export-overlays";
+import { DocxPagesPanel } from "./DocxPagesPanel";
+import { DocxStructurePanel } from "./DocxStructurePanel";
+import type { DocxStructureItem } from "@/lib/editor/docx-structure";
 
 const easeOut = [0.23, 1, 0.32, 1] as const;
 
-export type PdfSideTab = "layers" | "pages";
+export type DocxSideTab = "structure" | "pages";
 
-export function PdfSidePanel({
+export function DocxSidePanel({
   mode,
   open,
   tab,
-  buffer,
-  overlays,
-  pageIndex,
   pageCount,
+  currentPage,
+  structureItems,
   selectedId,
   canPaste,
   labels,
   onTab,
   onClose,
-  onSelectLayer,
-  onEditText,
-  onDeleteLayer,
-  onCopyLayer,
-  onDuplicateLayer,
-  onPasteLayer,
-  onReorderLayers,
-  onRemoveAllLayers,
   onSelectPage,
-  onMovePage,
+  onSelectItem,
+  onEditItem,
+  onCopyItem,
+  onDuplicateItem,
+  onPasteItem,
 }: {
   mode: "sidebar" | "drawer";
   open: boolean;
-  tab: PdfSideTab;
-  buffer: ArrayBuffer | null;
-  overlays: PdfOverlay[];
-  pageIndex: number;
+  tab: DocxSideTab;
   pageCount: number;
+  currentPage: number;
+  structureItems: DocxStructureItem[];
   selectedId: string | null;
   canPaste: boolean;
   labels: {
-    toggleLayers: string;
-    layersTitle: string;
-    layersHint: string;
-    layersEmpty: string;
-    layersRemoveAll: string;
-    layersRemoveAllConfirm: string;
+    toggleStructure: string;
+    structureTitle: string;
+    structureHint: string;
+    structureEmpty: string;
     pagesTitle: string;
     pagesEmpty: string;
     pageLabel: string;
-    moveUp: string;
-    moveDown: string;
-    layerText: string;
-    layerImage: string;
+    layerParagraph: string;
     layerTable: string;
-    layerShape: string;
-    layerStamp: string;
-    layerWhiteout: string;
+    layerImage: string;
     edit: string;
-    delete: string;
     copy: string;
     duplicate: string;
     paste: string;
     cancel: string;
   };
-  onTab: (tab: PdfSideTab) => void;
+  onTab: (tab: DocxSideTab) => void;
   onClose: () => void;
-  onSelectLayer: (id: string) => void;
-  onEditText: (overlay: TextOverlay) => void;
-  onDeleteLayer: (id: string) => void;
-  onCopyLayer: (id: string) => void;
-  onDuplicateLayer: (id: string) => void;
-  onPasteLayer: () => void;
-  onReorderLayers: (
-    pageIndex: number,
-    fromIndex: number,
-    toIndex: number,
-  ) => void;
-  onRemoveAllLayers: (pageIndex: number) => void;
   onSelectPage: (pageIndex: number) => void;
-  onMovePage: (fromIndex: number, toIndex: number) => void;
+  onSelectItem: (id: string) => void;
+  onEditItem: (item: DocxStructureItem) => void;
+  onCopyItem: (id: string) => void;
+  onDuplicateItem: (id: string) => void;
+  onPasteItem: () => void;
 }) {
-  const layerLabels = {
-    layersTitle: labels.layersTitle,
-    layersHint: labels.layersHint,
-    layersEmpty: labels.layersEmpty,
-    layersRemoveAll: labels.layersRemoveAll,
-    layersRemoveAllConfirm: labels.layersRemoveAllConfirm,
-    pageLabel: labels.pageLabel,
-    layerText: labels.layerText,
-    layerImage: labels.layerImage,
-    layerTable: labels.layerTable,
-    layerShape: labels.layerShape,
-    layerStamp: labels.layerStamp,
-    layerWhiteout: labels.layerWhiteout,
-    edit: labels.edit,
-    delete: labels.delete,
-    copy: labels.copy,
-    duplicate: labels.duplicate,
-    paste: labels.paste,
-  };
-
-  const pageLabels = {
-    pagesTitle: labels.pagesTitle,
-    pagesEmpty: labels.pagesEmpty,
-    pageLabel: labels.pageLabel,
-    moveUp: labels.moveUp,
-    moveDown: labels.moveDown,
-  };
-
   const tabs = (
     <div className="flex shrink-0 gap-1 border-b border-line px-2 py-2">
       <Button
         size="sm"
-        variant={tab === "layers" ? "solid" : "ghost"}
+        variant={tab === "structure" ? "solid" : "ghost"}
         className="min-h-11 flex-1 gap-1.5 text-xs"
-        onClick={() => onTab("layers")}
+        onClick={() => onTab("structure")}
       >
         <Layers className="h-3.5 w-3.5" />
-        {labels.layersTitle}
+        {labels.structureTitle}
       </Button>
       <Button
         size="sm"
@@ -138,40 +88,51 @@ export function PdfSidePanel({
   );
 
   const body =
-    tab === "layers" ? (
-      <PdfLayersPanel
-        overlays={overlays}
-        pageIndex={pageIndex}
-        pageCount={pageCount}
+    tab === "structure" ? (
+      <DocxStructurePanel
+        items={structureItems}
         selectedId={selectedId}
         canPaste={canPaste}
-        labels={layerLabels}
-        onSelect={onSelectLayer}
-        onEditText={onEditText}
-        onDelete={onDeleteLayer}
-        onCopy={onCopyLayer}
-        onDuplicate={onDuplicateLayer}
-        onPaste={onPasteLayer}
-        onReorder={onReorderLayers}
-        onRemoveAllPage={onRemoveAllLayers}
+        labels={{
+          structureTitle: labels.structureTitle,
+          structureHint: labels.structureHint,
+          structureEmpty: labels.structureEmpty,
+          pageLabel: labels.pageLabel,
+          layerParagraph: labels.layerParagraph,
+          layerTable: labels.layerTable,
+          layerImage: labels.layerImage,
+          edit: labels.edit,
+          copy: labels.copy,
+          duplicate: labels.duplicate,
+          paste: labels.paste,
+        }}
+        onSelect={onSelectItem}
+        onEdit={onEditItem}
+        onCopy={onCopyItem}
+        onDuplicate={onDuplicateItem}
+        onPaste={onPasteItem}
       />
-    ) : buffer ? (
-      <PdfPagesPanel
-        buffer={buffer}
+    ) : (
+      <DocxPagesPanel
         pageCount={pageCount}
-        currentPage={pageIndex}
-        labels={pageLabels}
+        currentPage={currentPage}
+        labels={{
+          pagesTitle: labels.pagesTitle,
+          pagesEmpty: labels.pagesEmpty,
+          pageLabel: labels.pageLabel,
+        }}
         onSelectPage={onSelectPage}
-        onMovePage={onMovePage}
       />
-    ) : null;
+    );
 
   if (mode === "sidebar") {
     if (!open) return null;
     return (
       <aside className="hidden h-full w-[min(100%,300px)] shrink-0 flex-col overflow-hidden border-s border-line bg-[#0a1220]/95 sm:flex">
         <div className="flex shrink-0 items-center justify-between border-b border-line px-3 py-2">
-          <p className="text-xs font-medium text-muted">{labels.toggleLayers}</p>
+          <p className="text-xs font-medium text-muted">
+            {labels.toggleStructure}
+          </p>
           <Button
             size="sm"
             variant="ghost"
@@ -212,7 +173,7 @@ export function PdfSidePanel({
           >
             <div className="mx-auto mb-2 mt-2 h-1 w-10 rounded-full bg-white/25" />
             <div className="flex shrink-0 items-center justify-between px-4 pb-1">
-              <p className="text-sm font-medium">{labels.toggleLayers}</p>
+              <p className="text-sm font-medium">{labels.toggleStructure}</p>
               <Button
                 size="sm"
                 variant="ghost"

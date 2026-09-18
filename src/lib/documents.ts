@@ -1,6 +1,6 @@
-export const MAX_DOCX_BYTES = 15 * 1024 * 1024;
-export const MAX_PDF_BYTES = 15 * 1024 * 1024;
-export const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
+export const MAX_DOCX_BYTES = 50 * 1024 * 1024;
+export const MAX_PDF_BYTES = 50 * 1024 * 1024;
+export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 export const DOCX_MIME =
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
@@ -94,4 +94,10 @@ export function editorPathForMime(id: string, mimeType?: string | null) {
   if (isPdfMime(mimeType)) return `/editor/pdf/${id}`;
   if (isXlsxMime(mimeType)) return `/editor/sheet/${id}`;
   return `/editor/${id}`;
+}
+
+/** Sidecar JSON next to the PDF so overlays stay editable after save. */
+export function overlaysStoragePath(storagePath: string) {
+  // Keep a storage-safe key (some buckets only allow known extensions).
+  return `${storagePath}.overlays`;
 }

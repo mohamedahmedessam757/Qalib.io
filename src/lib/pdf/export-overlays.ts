@@ -26,6 +26,11 @@ export type TextOverlay = PdfOverlayBase & {
   fontSize: number;
   color: string;
   coverOriginal?: boolean;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  /** Whitelisted font keys only — never raw CSS from user input. */
+  fontFamily?: "noto" | "sans" | "serif";
   /** Logical alignment inside the box */
   align?: "start" | "center" | "end";
   dir?: "rtl" | "ltr" | "auto";
@@ -105,9 +110,15 @@ export async function exportPdfWithOverlays(
   source: ArrayBuffer,
   overlays: PdfOverlay[],
 ): Promise<Uint8Array> {
+  // Keep original vector pages — rasterizing whole pages destroys text quality.
   const pdf = await PDFDocument.load(source);
   pdf.registerFontkit(fontkit);
   const helvetica = await pdf.embedFont(StandardFonts.Helvetica);
+  const helveticaBold = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const helveticaOblique = await pdf.embedFont(StandardFonts.HelveticaOblique);
+  const helveticaBoldOblique = await pdf.embedFont(
+    StandardFonts.HelveticaBoldOblique,
+  );
 
   const pages = pdf.getPages();
 
@@ -141,8 +152,11 @@ export async function exportPdfWithOverlays(
       const useArabic = hasArabic(overlay.text);
       const align = overlay.align || (useArabic ? "end" : "start");
 
-      // Arabic: paint via browser HarfBuzz → PNG. Glyph drawText cannot join letters.
-      if (useArabic && typeof document !== "undefined") {
+      // Arabic: paint via browser HarfBuzz → PNG. Never use drawText for Arabic.
+      if (useArabic) {
+        if (typeof document === "undefined") {
+          throw new ArabicRasterizeError();
+        }
         await ensureNotoArabicFont();
         const raster = await rasterizePdfTextBlock({
           text: overlay.text,
@@ -151,6 +165,10 @@ export async function exportPdfWithOverlays(
           boxWidth: w,
           align,
           rtl: overlay.dir !== "ltr",
+          bold: Boolean(overlay.bold),
+          italic: Boolean(overlay.italic),
+          underline: Boolean(overlay.underline),
+          fontFamily: overlay.fontFamily || "noto",
         });
         if (raster) {
           const img = await pdf.embedPng(raster.bytes);
@@ -175,13 +193,19 @@ export async function exportPdfWithOverlays(
         throw new ArabicRasterizeError();
       }
 
-      const font = helvetica;
+      // Latin / non-Arabic only
+      const font = overlay.bold
+        ? overlay.italic
+          ? helveticaBoldOblique
+          : helveticaBold
+        : overlay.italic
+          ? helveticaOblique
+          : helvetica;
       const lines = overlay.text.split("\n");
       for (let i = 0; i < lines.length; i += 1) {
         const line = lines[i];
         try {
-          const prepared = preparePdfTextLine(line || " ");
-          const drawn = prepared.text || " ";
+          const drawn = line || " ";
           let textWidth = 0;
           try {
             textWidth = font.widthOfTextAtSize(drawn, size);
@@ -191,14 +215,26 @@ export async function exportPdfWithOverlays(
           let tx = x + 2;
           if (align === "end") tx = x + w - 2 - textWidth;
           else if (align === "center") tx = x + (w - textWidth) / 2;
+          const ty = y + h - size - i * (size + 2);
           page.drawText(drawn, {
             x: Math.max(x + 1, tx),
-            y: y + h - size - i * (size + 2),
+            y: ty,
             size,
             font,
             color: rgb(r, g, b),
-            ...(prepared.rtl ? {} : { maxWidth: w - 4 }),
+            maxWidth: w - 4,
           });
+          if (overlay.underline) {
+            page.drawLine({
+              start: { x: Math.max(x + 1, tx), y: ty - 1 },
+              end: {
+                x: Math.max(x + 1, tx) + textWidth,
+                y: ty - 1,
+              },
+              thickness: Math.max(0.6, size * 0.06),
+              color: rgb(r, g, b),
+            });
+          }
         } catch {
           /* skip undrawable glyphs */
         }
