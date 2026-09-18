@@ -40,6 +40,7 @@ import { Button } from "@/components/ui/Button";
 import { AiChatPanel } from "@/components/ai/AiChatPanel";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { XLSX_MIME } from "@/lib/documents";
+import { replaceDocumentBytes } from "@/lib/document-upload";
 import {
   getCachedDocumentMeta,
   setCachedDocumentMeta,
@@ -139,15 +140,11 @@ export const ExcelEditorClient = forwardRef<
     setSaveState("saving");
     try {
       const bytes = await workbookToBuffer(wb);
-      const res = await fetch(`/api/documents/${documentId}`, {
-        method: "PUT",
-        headers: { "Content-Type": XLSX_MIME },
-        body: bytes,
+      await replaceDocumentBytes({
+        documentId,
+        bytes,
+        contentType: XLSX_MIME,
       });
-      if (!res.ok) {
-        const json = await res.json().catch(() => ({}));
-        throw new Error(json.error || t("saveError"));
-      }
       dirtyRef.current = false;
       setSaveState("saved");
     } catch {

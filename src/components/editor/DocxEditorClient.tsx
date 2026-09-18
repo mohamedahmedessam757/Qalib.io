@@ -32,6 +32,7 @@ import {
 import { Link } from "@/i18n/navigation";
 import { Button } from "@/components/ui/Button";
 import { DOCX_MIME } from "@/lib/documents";
+import { replaceDocumentBytes } from "@/lib/document-upload";
 import {
   canSharePdfFiles,
   createPdfObjectUrl,
@@ -307,19 +308,20 @@ export function DocxEditorClient({
     if (!out) return false;
     setSaveState("saving");
 
-    const res = await fetch(`/api/documents/${documentId}`, {
-      method: "PUT",
-      headers: { "Content-Type": DOCX_MIME },
-      body: out,
-    });
-    if (!res.ok) {
+    try {
+      await replaceDocumentBytes({
+        documentId,
+        bytes: out,
+        contentType: DOCX_MIME,
+      });
+      dirtyRef.current = false;
+      setSaveState("saved");
+      return true;
+    } catch {
       setSaveState("error");
       toast.error(t("saveError"));
       return false;
     }
-    dirtyRef.current = false;
-    setSaveState("saved");
-    return true;
   }, [documentId, t]);
 
   useEffect(() => {

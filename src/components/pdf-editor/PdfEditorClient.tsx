@@ -49,6 +49,7 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { AiChatPanel } from "@/components/ai/AiChatPanel";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { PDF_MIME } from "@/lib/documents";
+import { replaceDocumentBytes } from "@/lib/document-upload";
 import { EDITOR_IMAGE_ACCEPT } from "@/lib/editor/normalize-editor-image";
 import {
   canSharePdfFiles,
@@ -311,10 +312,10 @@ export function PdfEditorClient({
         }
         if (stripped && !cancelled) {
           try {
-            await fetch(`/api/documents/${documentId}`, {
-              method: "PUT",
-              headers: { "Content-Type": PDF_MIME },
-              body: new Blob([new Uint8Array(working)], { type: PDF_MIME }),
+            await replaceDocumentBytes({
+              documentId,
+              bytes: working,
+              contentType: PDF_MIME,
             });
           } catch {
             /* will retry on next save */
@@ -367,16 +368,11 @@ export function PdfEditorClient({
       setSaveState("saving");
       toast.message(t("savingOverlay"));
       // Keep the base PDF unbaked so overlays stay editable after reload.
-      const res = await fetch(`/api/documents/${documentId}`, {
-        method: "PUT",
-        headers: { "Content-Type": PDF_MIME },
-        body: new Blob([new Uint8Array(src)], { type: PDF_MIME }),
+      await replaceDocumentBytes({
+        documentId,
+        bytes: src,
+        contentType: PDF_MIME,
       });
-      if (!res.ok) {
-        setSaveState("error");
-        toast.error(t("saveError"));
-        return false;
-      }
       const overlaysRes = await fetch(
         `/api/documents/${documentId}/overlays`,
         {

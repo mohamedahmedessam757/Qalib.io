@@ -23,6 +23,10 @@ import {
   isXlsxMime,
   MAX_UPLOAD_BYTES,
 } from "@/lib/documents";
+import {
+  DocumentUploadError,
+  uploadNewDocumentFile,
+} from "@/lib/document-upload";
 import { prefetchDocumentMeta } from "@/lib/document-cache";
 import { Link, useRouter } from "@/i18n/navigation";
 import {
@@ -125,18 +129,8 @@ export function DocumentsClient({ initialDocs }: { initialDocs: Doc[] }) {
     }
 
     setUploading(true);
-    const form = new FormData();
-    form.append("file", file);
     try {
-      const res = await fetch("/api/documents", { method: "POST", body: form });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || t("uploadError"));
-      const created = json.document as {
-        id: string;
-        title: string;
-        byteSize: number;
-        mimeType: string;
-      };
+      const created = await uploadNewDocumentFile(file);
       setDocs((prev) => [
         {
           id: created.id,
@@ -150,7 +144,13 @@ export function DocumentsClient({ initialDocs }: { initialDocs: Doc[] }) {
       toast.success(t("uploadSuccess"));
       router.push(editorHref(created));
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : t("uploadError"));
+      if (err instanceof DocumentUploadError) {
+        if (err.code === "too_large") toast.error(t("tooLarge"));
+        else if (err.code === "invalid_type") toast.error(t("invalidType"));
+        else toast.error(t("uploadError"));
+      } else {
+        toast.error(err instanceof Error ? err.message : t("uploadError"));
+      }
     } finally {
       setUploading(false);
       if (inputRef.current) inputRef.current.value = "";
