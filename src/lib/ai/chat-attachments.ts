@@ -34,7 +34,7 @@ export function isAllowedChatImage(
 ) {
   const type = (file.type || "").toLowerCase();
   if (type.startsWith("image/")) return true;
-  if (/\.(png|jpe?g|webp|gif|heic|heif)$/i.test(file.name)) return true;
+  if (/\.(png|jpe?g|webp|gif|heic|heif|bmp|avif|tiff?)$/i.test(file.name)) return true;
   // iOS Photos often yields empty MIME + no extension when picking from library
   if (opts?.fromImagePicker && !type && file.size > 0) {
     if (/\.(docx|pdf|xlsx|mp4|mov|m4a|mp3|webm)$/i.test(file.name)) return false;

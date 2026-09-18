@@ -57,26 +57,56 @@ async function persistDocument(opts: {
     return { error: uploadError.message };
   }
 
+  return persistDocumentMeta({
+    supabase,
+    userId,
+    id,
+    title,
+    storagePath,
+    mimeType,
+    byteSize: buffer.byteLength,
+  });
+}
+
+/** Register metadata for a file already present in Storage (direct upload). */
+async function persistDocumentMeta(opts: {
+  supabase: Awaited<ReturnType<typeof requireUser>>["supabase"];
+  userId: string;
+  id: string;
+  title: string;
+  storagePath: string;
+  mimeType: string;
+  byteSize: number;
+}) {
+  const { supabase, userId, id, title, storagePath, mimeType, byteSize } = opts;
+
   const payload = {
     id,
     owner_id: userId,
     title,
     storage_path: storagePath,
     mime_type: mimeType,
-    byte_size: buffer.byteLength,
+    byte_size: byteSize,
   };
 
   if (prisma) {
-    await prisma.document.create({
-      data: {
-        id,
-        ownerId: userId,
-        title,
-        storagePath,
-        mimeType,
-        byteSize: buffer.byteLength,
-      },
-    });
+    try {
+      await prisma.document.create({
+        data: {
+          id,
+          ownerId: userId,
+          title,
+          storagePath,
+          mimeType,
+          byteSize,
+        },
+      });
+    } catch (err) {
+      await supabase.storage.from(STORAGE_BUCKET).remove([storagePath]);
+      return {
+        error: err instanceof Error ? err.message : "Could not create document",
+      };
+    }
   } else {
     const { error: insertError } = await supabase.from("documents").insert(payload);
     if (insertError) {
@@ -92,7 +122,7 @@ async function persistDocument(opts: {
       title,
       storagePath,
       mimeType,
-      byteSize: buffer.byteLength,
+      byteSize,
     },
   };
 }
@@ -120,14 +150,69 @@ export async function POST(request: Request) {
 
   const contentType = request.headers.get("content-type") || "";
 
-  // JSON create blank document
+  // JSON create blank document OR register a direct-storage upload
   if (contentType.includes("application/json")) {
     try {
       const body = (await request.json()) as {
         action?: string;
         type?: string;
         title?: string;
+        id?: string;
+        storagePath?: string;
+        mimeType?: string;
+        byteSize?: number;
       };
+
+      if (body.action === "register") {
+        const id = String(body.id || "").trim();
+        const storagePath = String(body.storagePath || "").trim();
+        const title = sanitizeTitle(body.title || "");
+        const byteSize = Number(body.byteSize);
+        const mimeType = String(body.mimeType || "");
+
+        if (!id || !storagePath || !title) {
+          return NextResponse.json({ error: "Missing register fields" }, { status: 400 });
+        }
+        if (!storagePath.startsWith(`${user.id}/`)) {
+          return NextResponse.json({ error: "Invalid storage path" }, { status: 400 });
+        }
+        if (!Number.isFinite(byteSize) || byteSize <= 0 || byteSize > MAX_UPLOAD_BYTES) {
+          return NextResponse.json({ error: "Invalid file size" }, { status: 400 });
+        }
+        if (
+          mimeType !== DOCX_MIME &&
+          mimeType !== PDF_MIME &&
+          mimeType !== XLSX_MIME
+        ) {
+          return NextResponse.json({ error: "Invalid mime type" }, { status: 400 });
+        }
+
+        // Confirm the object landed in storage before creating the DB row.
+        const { data: signed, error: signError } = await supabase.storage
+          .from(STORAGE_BUCKET)
+          .createSignedUrl(storagePath, 60);
+        if (signError || !signed?.signedUrl) {
+          return NextResponse.json(
+            { error: "Upload not found in storage" },
+            { status: 400 },
+          );
+        }
+
+        const result = await persistDocumentMeta({
+          supabase,
+          userId: user.id,
+          id,
+          title,
+          storagePath,
+          mimeType,
+          byteSize,
+        });
+        if ("error" in result && result.error) {
+          return NextResponse.json({ error: result.error }, { status: 500 });
+        }
+        return NextResponse.json(result);
+      }
+
       if (body.action !== "create") {
         return NextResponse.json({ error: "Invalid action" }, { status: 400 });
       }

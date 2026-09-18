@@ -40,7 +40,7 @@ async function revealAllPages(
         /* ignore */
       }
       await new Promise<void>((r) => requestAnimationFrame(() => r()));
-      await new Promise<void>((r) => setTimeout(r, 16));
+      await new Promise<void>((r) => setTimeout(r, 100));
     }
   }
 
@@ -59,7 +59,54 @@ async function revealAllPages(
     scroller.scrollTop = 0;
   }
 
-  await new Promise<void>((r) => setTimeout(r, 80));
+  await new Promise<void>((r) => setTimeout(r, 120));
+}
+
+function isPageElementReady(el: HTMLElement): boolean {
+  return el.offsetWidth >= 80 && el.offsetHeight >= 80;
+}
+
+/** Eigenpal often virtualizes pages — pick the layout-page most visible in the viewport. */
+function findVisibleLayoutPage(root: ParentNode): HTMLElement | null {
+  const pages = collectPageElements(root);
+  let best: HTMLElement | null = null;
+  let bestScore = 0;
+  const vh = typeof window !== "undefined" ? window.innerHeight : 900;
+
+  for (const el of pages) {
+    if (!isPageElementReady(el)) continue;
+    const r = el.getBoundingClientRect();
+    const visibleH = Math.min(r.bottom, vh) - Math.max(r.top, 0);
+    if (visibleH < 48) continue;
+    const score = visibleH * Math.max(1, r.width);
+    if (score > bestScore) {
+      bestScore = score;
+      best = el;
+    }
+  }
+
+  return best || pages.find(isPageElementReady) || pages[0] || null;
+}
+
+function resolvePageElement(
+  root: ParentNode,
+  pageIndex: number,
+  total: number,
+): HTMLElement | null {
+  const pages = collectPageElements(root);
+  if (pages.length >= total) {
+    const at = pages[pageIndex];
+    if (at && isPageElementReady(at)) return at;
+  }
+  const visible = findVisibleLayoutPage(root);
+  if (visible && isPageElementReady(visible)) return visible;
+  return pages[pageIndex] || pages[0] || null;
+}
+
+async function waitForPagePaint(constrained: boolean) {
+  await nextFrame();
+  await nextFrame();
+  await pause(constrained ? 360 : 150);
 }
 
 function findPagesRoot(root: ParentNode): HTMLElement | null {
@@ -134,6 +181,8 @@ type CaptureProfile = {
 function captureProfiles(constrained: boolean): CaptureProfile[] {
   if (constrained) {
     return [
+      // Browser-native capture with embedded fonts — required for joined Arabic.
+      { skipFonts: false, pixelRatio: 2, flatten: false, jpeg: false },
       { skipFonts: true, pixelRatio: 2, flatten: false, jpeg: false },
       { skipFonts: true, pixelRatio: 1, flatten: false, jpeg: false },
       { skipFonts: true, pixelRatio: 1, flatten: true, jpeg: false },
@@ -285,8 +334,59 @@ function buildCaptureOptions(
       margin: "0",
       transform: "none",
       filter: "none",
+      letterSpacing: "0",
+      wordSpacing: "normal",
     },
   };
+}
+
+async function waitForCaptureFonts(root: HTMLElement): Promise<void> {
+  try {
+    await ensureNotoArabicFont();
+    if ("fonts" in document) {
+      await document.fonts.ready;
+      const fam = getComputedStyle(root)
+        .fontFamily?.split(",")[0]
+        ?.replace(/["']/g, "")
+        .trim();
+      if (fam) {
+        await document.fonts.load(`16px "${fam}"`);
+        await document.fonts.load(`700 16px "${fam}"`);
+      }
+    }
+  } catch {
+    /* best effort */
+  }
+}
+
+/**
+ * Capture via html-to-image so the browser's HarfBuzz shaper renders Arabic.
+ * Manual canvas fillText cannot join Arabic glyphs (confirmed root cause).
+ */
+async function capturePageWithBrowser(pageEl: HTMLElement): Promise<{
+  dataUrl: string;
+  width: number;
+  height: number;
+}> {
+  const { width, height } = pageCssSize(pageEl);
+  const profiles = captureProfiles(isConstrainedCaptureDevice());
+  let lastErr: unknown;
+
+  for (const profile of profiles) {
+    try {
+      const runCapture = (node: HTMLElement) =>
+        rasterizeNode(node, profile, width, height);
+      const dataUrl = profile.flatten
+        ? await withFlattenedClone(pageEl, width, height, runCapture)
+        : await runCapture(pageEl);
+      return { dataUrl, width, height };
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr instanceof Error
+    ? lastErr
+    : new Error("Browser page capture failed");
 }
 
 function isMostlyBlankCanvas(canvas: HTMLCanvasElement): boolean {
@@ -615,6 +715,118 @@ function lineEndOffset(
   return Math.max(best, start + 1);
 }
 
+function styleSignature(cs: CSSStyleDeclaration): string {
+  return [
+    cs.fontStyle,
+    cs.fontWeight,
+    cs.fontSize,
+    cs.fontFamily,
+    cs.color,
+    cs.direction,
+    cs.textAlign,
+    cs.textDecorationLine,
+  ].join("|");
+}
+
+type MergedTextRun = {
+  text: string;
+  first: Text;
+  last: Text;
+  parent: HTMLElement;
+  cs: CSSStyleDeclaration;
+};
+
+/**
+ * Merge adjacent text nodes that share the same style so Arabic is shaped as
+ * whole words (canvas fillText of single glyphs uses isolated forms).
+ * Confirmed cause of disconnected Arabic: char-by-char paint + letter-spacing.
+ */
+function collectMergedTextRuns(pageEl: HTMLElement): MergedTextRun[] {
+  const nodes: Text[] = [];
+  walkTextNodes(pageEl, (n) => nodes.push(n));
+  const runs: MergedTextRun[] = [];
+  let current: MergedTextRun | null = null;
+  let currentKey = "";
+
+  for (const node of nodes) {
+    const parent = node.parentElement;
+    if (!parent || shouldSkipPaintEl(parent)) {
+      current = null;
+      continue;
+    }
+    const raw = node.nodeValue ?? "";
+    if (!raw.replace(/\s+/g, "")) {
+      if (current && /^\s*$/.test(raw)) {
+        current.text += raw;
+        current.last = node;
+      }
+      continue;
+    }
+    const cs = getComputedStyle(parent);
+    if (cs.display === "none" || cs.visibility === "hidden") {
+      current = null;
+      continue;
+    }
+    const key = styleSignature(cs);
+    const canMerge =
+      current &&
+      currentKey === key &&
+      (current.last.parentElement === parent ||
+        current.last.parentElement?.parentElement === parent.parentElement);
+
+    if (canMerge && current) {
+      current.text += raw;
+      current.last = node;
+    } else {
+      current = { text: raw, first: node, last: node, parent, cs };
+      currentKey = key;
+      runs.push(current);
+    }
+  }
+  return runs;
+}
+
+function neutralizeTracking(root: HTMLElement): () => void {
+  const saved: Array<{
+    el: HTMLElement;
+    letterSpacing: string;
+    wordSpacing: string;
+  }> = [];
+  const nodes = root.querySelectorAll<HTMLElement>("*");
+  nodes.forEach((el) => {
+    const cs = getComputedStyle(el);
+    const ls = cs.letterSpacing;
+    const ws = cs.wordSpacing;
+    const needsLs =
+      ls &&
+      ls !== "normal" &&
+      ls !== "0px" &&
+      ls !== "0" &&
+      Number.parseFloat(ls) !== 0;
+    const needsWs =
+      ws &&
+      ws !== "normal" &&
+      ws !== "0px" &&
+      ws !== "0" &&
+      Number.parseFloat(ws) !== 0;
+    if (!needsLs && !needsWs) return;
+    saved.push({
+      el,
+      letterSpacing: el.style.letterSpacing,
+      wordSpacing: el.style.wordSpacing,
+    });
+    el.style.letterSpacing = "0";
+    el.style.wordSpacing = "normal";
+  });
+  void root.offsetWidth;
+  return () => {
+    for (const item of saved) {
+      item.el.style.letterSpacing = item.letterSpacing;
+      item.el.style.wordSpacing = item.wordSpacing;
+    }
+  };
+}
+
 function paintCanvasLine(
   ctx: CanvasRenderingContext2D,
   text: string,
@@ -625,10 +837,20 @@ function paintCanvasLine(
   scaleY: number,
 ) {
   if (!text) return;
-  const rtl = cs.direction === "rtl";
+  const rtl =
+    cs.direction === "rtl" ||
+    /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(
+      text,
+    );
   const align = cs.textAlign;
   ctx.direction = rtl ? "rtl" : "ltr";
   ctx.textBaseline = "middle";
+  try {
+    // Never apply letter-spacing — disconnects Arabic and spaces Latin.
+    ctx.letterSpacing = "0px";
+  } catch {
+    /* ignore */
+  }
   const isRight =
     align === "right" ||
     (align === "end" && !rtl) ||
@@ -748,13 +970,9 @@ function paintPageToCanvas(
     }
   }
 
-  walkTextNodes(pageEl, (textNode) => {
-    const raw = textNode.nodeValue ?? "";
-    if (!raw.replace(/\s+/g, "")) return;
-    const parent = textNode.parentElement;
-    if (!parent || shouldSkipPaintEl(parent)) return;
-    const cs = getComputedStyle(parent);
-    if (cs.display === "none" || cs.visibility === "hidden") return;
+  for (const run of collectMergedTextRuns(pageEl)) {
+    const { text: raw, first, last, cs } = run;
+    if (!raw.replace(/\s+/g, "")) continue;
     applyFill(ctx, cs.color, "#111111");
     if (isNearWhiteFill(String(ctx.fillStyle))) {
       ctx.fillStyle = "#111111";
@@ -766,21 +984,22 @@ function paintPageToCanvas(
       '"NotoSansArabic","Noto Sans Arabic","Segoe UI",Tahoma,Arial,sans-serif';
     ctx.font = `${cs.fontStyle || "normal"} ${cs.fontWeight || "400"} ${fontSize} ${fontFamily}`;
     try {
-      ctx.letterSpacing = cs.letterSpacing || "0px";
+      ctx.letterSpacing = "0px";
     } catch {
       /* ignore */
     }
 
     const range = document.createRange();
     try {
-      range.selectNodeContents(textNode);
+      range.setStart(first, 0);
+      range.setEnd(last, last.length);
     } catch {
-      return;
+      continue;
     }
     const rects = Array.from(range.getClientRects()).filter(
       (r) => r.width >= 0.4 && r.height >= 0.4,
     );
-    if (!rects.length) return;
+    if (!rects.length) continue;
 
     const union = unionClientRects(rects);
     const maxH = Math.max(...rects.map((r) => r.height));
@@ -811,26 +1030,72 @@ function paintPageToCanvas(
           ctx.stroke();
         }
       }
-      return;
+      continue;
     }
 
     const lines = groupClientRectsByLine(rects);
-    let offset = 0;
-    for (const line of lines) {
-      if (offset >= raw.length) break;
-      const next = lineEndOffset(textNode, raw, offset, line);
-      paintCanvasLine(
-        ctx,
-        raw.slice(offset, next).replace(/\s+$/g, ""),
-        line,
-        cs,
-        visual,
-        scaleX,
-        scaleY,
-      );
-      offset = next;
+    if (first === last) {
+      let offset = 0;
+      for (const line of lines) {
+        if (offset >= raw.length) break;
+        const next = lineEndOffset(first, raw, offset, line);
+        paintCanvasLine(
+          ctx,
+          raw.slice(offset, next).replace(/\s+$/g, ""),
+          line,
+          cs,
+          visual,
+          scaleX,
+          scaleY,
+        );
+        offset = next;
+      }
+    } else {
+      // Merged multi-node run: split by measured width so Arabic stays shaped.
+      let rest = raw;
+      for (let i = 0; i < lines.length; i += 1) {
+        const line = lines[i]!;
+        if (!rest) break;
+        if (i === lines.length - 1) {
+          paintCanvasLine(
+            ctx,
+            rest.replace(/\s+$/g, ""),
+            line,
+            cs,
+            visual,
+            scaleX,
+            scaleY,
+          );
+          break;
+        }
+        const maxW = Math.max(8, line.width / scaleX);
+        let lo = 1;
+        let hi = rest.length;
+        let best = 1;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          const chunk = rest.slice(0, mid);
+          if (ctx.measureText(chunk).width <= maxW) {
+            best = mid;
+            lo = mid + 1;
+          } else hi = mid - 1;
+        }
+        // Prefer breaking on whitespace when possible.
+        const space = rest.lastIndexOf(" ", best);
+        const cut = space > 0 ? space + 1 : Math.max(1, best);
+        paintCanvasLine(
+          ctx,
+          rest.slice(0, cut).replace(/\s+$/g, ""),
+          line,
+          cs,
+          visual,
+          scaleX,
+          scaleY,
+        );
+        rest = rest.slice(cut);
+      }
     }
-  });
+  }
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   return canvas;
@@ -943,9 +1208,23 @@ async function capturePageImage(pageEl: HTMLElement): Promise<{
 }> {
   await waitUntilPainted(pageEl);
   const restoreNoise = hideCaptureNoise(pageEl);
+  const restoreTracking = neutralizeTracking(pageEl);
+  const restoreColors = inlineResolvedColors(pageEl);
   try {
-    return paintPageToPng(pageEl);
+    await waitForCaptureFonts(pageEl);
+    await nextFrame();
+    await nextFrame();
+    await pause(isConstrainedCaptureDevice() ? 120 : 50);
+
+    try {
+      return await capturePageWithBrowser(pageEl);
+    } catch {
+      // Last resort: manual canvas paint (Arabic may break).
+      return paintPageToPng(pageEl);
+    }
   } finally {
+    restoreColors();
+    restoreTracking();
     restoreNoise();
   }
 }
@@ -1004,23 +1283,38 @@ export async function exportDocxPagesToPdfBlob(
       await pause(constrained ? 420 : 80);
       await revealAllPages(opts.root, opts.scrollToPage, opts.totalPages);
 
-      const pages = collectExportTargets(opts.root);
-      if (!pages.length) {
-        throw new Error("No document pages found to export");
-      }
+      const domPages = collectPageElements(opts.root);
+      const total = Math.max(1, opts.totalPages || 0, domPages.length);
 
       const pdf = await PDFDocument.create();
 
-      for (let i = 0; i < pages.length; i += 1) {
-        const pageEl = pages[i]!;
-        opts.onProgress?.(i + 1, pages.length);
+      // Capture page-by-page: virtualized editors only paint one layout-page at a time.
+      for (let i = 0; i < total; i += 1) {
+        const pageNum = i + 1;
+        opts.onProgress?.(pageNum, total);
+
+        if (opts.scrollToPage) {
+          try {
+            opts.scrollToPage(pageNum);
+          } catch {
+            /* ignore */
+          }
+        }
+
+        await waitForPagePaint(constrained);
+
+        const pageEl = resolvePageElement(opts.root, i, total);
+        if (!pageEl) {
+          throw new Error(`Page ${pageNum} not available for export`);
+        }
 
         try {
-          pageEl.scrollIntoView({ block: "nearest", inline: "nearest" });
+          pageEl.scrollIntoView({ block: "center", inline: "nearest" });
         } catch {
           /* ignore */
         }
         await nextFrame();
+        await pause(constrained ? 120 : 60);
 
         const shot = await capturePageImage(pageEl);
         const img = await embedRaster(pdf, shot.dataUrl);

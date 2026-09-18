@@ -4,6 +4,7 @@ import {
   isPdfMime,
   isXlsxMime,
   MAX_UPLOAD_BYTES,
+  overlaysStoragePath,
   PDF_MIME,
   sanitizeTitle,
   STORAGE_BUCKET,
@@ -55,9 +56,49 @@ export async function PUT(request: Request, { params }: Params) {
 
   const contentType = request.headers.get("content-type") || "";
 
-  // Rename title via JSON body
+  // Rename title OR confirm a direct storage replace
   if (contentType.includes("application/json")) {
-    const body = (await request.json()) as { title?: string };
+    const body = (await request.json()) as {
+      title?: string;
+      action?: string;
+      byteSize?: number;
+    };
+
+    if (body.action === "confirm-upload") {
+      const byteSize = Number(body.byteSize);
+      if (!Number.isFinite(byteSize) || byteSize <= 0 || byteSize > MAX_UPLOAD_BYTES) {
+        return NextResponse.json({ error: "Invalid file size" }, { status: 400 });
+      }
+
+      const { data: signed, error: signError } = await supabase.storage
+        .from(STORAGE_BUCKET)
+        .createSignedUrl(doc.storagePath, 60);
+      if (signError || !signed?.signedUrl) {
+        return NextResponse.json(
+          { error: "Upload not found in storage" },
+          { status: 400 },
+        );
+      }
+
+      if (prisma) {
+        await prisma.document.update({
+          where: { id },
+          data: { byteSize },
+        });
+      } else {
+        const { error } = await supabase
+          .from("documents")
+          .update({ byte_size: byteSize })
+          .eq("id", id)
+          .eq("owner_id", user.id);
+        if (error) {
+          return NextResponse.json({ error: error.message }, { status: 500 });
+        }
+      }
+
+      return NextResponse.json({ ok: true, byteSize });
+    }
+
     const title = sanitizeTitle(body.title || "");
     if (!title) {
       return NextResponse.json({ error: "Missing title" }, { status: 400 });
@@ -138,7 +179,10 @@ export async function DELETE(_request: Request, { params }: Params) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  await supabase.storage.from(STORAGE_BUCKET).remove([doc.storagePath]);
+  await supabase.storage.from(STORAGE_BUCKET).remove([
+    doc.storagePath,
+    overlaysStoragePath(doc.storagePath),
+  ]);
 
   if (prisma) {
     await prisma.document.delete({ where: { id } });
