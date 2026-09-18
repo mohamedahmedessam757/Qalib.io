@@ -42,7 +42,7 @@
     "emptyBody": "أنشئ Word أو PDF أو Excel من الصفر، أو ارفع ملفًا للبدء.",
     "open": "فتح",
     "updated": "آخر تحديث",
-    "tooLarge": "الملف أكبر من الحد المسموح (15MB).",
+    "tooLarge": "الملف أكبر من الحد المسموح (50MB).",
     "invalidType": "يُقبل امتداد .docx و .pdf و .xlsx فقط.",
     "uploadSuccess": "تم رفع الملف",
     "uploadError": "فشل الرفع",

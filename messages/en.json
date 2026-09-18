@@ -42,7 +42,7 @@
     "emptyBody": "Create a blank Word/PDF/Excel or upload a file to start editing.",
     "open": "Open",
     "updated": "Updated",
-    "tooLarge": "File exceeds the 15MB limit.",
+    "tooLarge": "File exceeds the 50MB limit.",
     "invalidType": "Only .docx, .pdf, and .xlsx files are accepted.",
     "uploadSuccess": "File uploaded",
     "uploadError": "Upload failed",
