@@ -5,7 +5,11 @@ import type { EditorView } from "prosemirror-view";
 export type TableCellInfo = {
   row: number;
   col: number;
+  /** First paragraph in the cell (primary write target). */
   paraId: string;
+  /** Every textblock paraId inside the cell (layout tables often pack many). */
+  paraIds: string[];
+  /** Cell body with paragraphs joined by newlines. */
   text: string;
 };
 
@@ -14,6 +18,8 @@ export type TableGrid = {
   cols: number;
   focusRow: number;
   focusCol: number;
+  /** Paragraph the user actually tapped (may be mid-cell). */
+  focusParaId?: string;
   cells: TableCellInfo[];
 };
 
@@ -43,21 +49,50 @@ function findTableFromSelection(
   return null;
 }
 
-function paragraphInCell(cell: PmNode): { paraId: string; text: string } | null {
-  let hit: { paraId: string; text: string } | null = null;
+/**
+ * Collect every textblock in a cell. Formal Word layouts often put letterhead +
+ * body copy in one cell as many paragraphs — indexing only the first made the
+ * mobile table sheet appear "stuck" on the letterhead forever.
+ */
+export function paragraphsInCell(
+  cell: PmNode,
+): { paraId: string; text: string }[] {
+  const hits: { paraId: string; text: string }[] = [];
   cell.descendants((node) => {
-    if (hit) return false;
     if (!node.isTextblock) return true;
     const paraId = String(node.attrs?.paraId || "").trim();
     if (!paraId) return true;
-    hit = {
+    hits.push({
       paraId,
-      // Empty cells still need a paraId so the grid can edit them.
       text: getVanillaNodeText(node) || "",
-    };
-    return false;
+    });
+    return true;
   });
-  return hit;
+  return hits;
+}
+
+function cellInfoFromNode(
+  cellNode: PmNode,
+  row: number,
+  col: number,
+): TableCellInfo | null {
+  const paras = paragraphsInCell(cellNode);
+  if (paras.length === 0) return null;
+  return {
+    row,
+    col,
+    paraId: paras[0]!.paraId,
+    paraIds: paras.map((p) => p.paraId),
+    text: paras.map((p) => p.text).join("\n"),
+  };
+}
+
+export function cellContainsParaId(
+  cell: TableCellInfo,
+  paraId: string,
+): boolean {
+  if (cell.paraId === paraId) return true;
+  return cell.paraIds.includes(paraId);
 }
 
 function focusParaIdFromSelection(view: EditorView): string | null {
@@ -88,15 +123,8 @@ export function readTableGridFromView(view: EditorView): TableGrid | null {
     let colIndex = 0;
     rowNode.forEach((cellNode) => {
       if (!CELL_TYPES.has(cellNode.type.name)) return;
-      const para = paragraphInCell(cellNode);
-      if (para) {
-        cells.push({
-          row: rowIndex,
-          col: colIndex,
-          paraId: para.paraId,
-          text: para.text,
-        });
-      }
+      const info = cellInfoFromNode(cellNode, rowIndex, colIndex);
+      if (info) cells.push(info);
       colIndex += 1;
     });
     maxCols = Math.max(maxCols, colIndex);
@@ -109,7 +137,7 @@ export function readTableGridFromView(view: EditorView): TableGrid | null {
   let focusRow = 0;
   let focusCol = 0;
   if (focusParaId) {
-    const focusCell = cells.find((c) => c.paraId === focusParaId);
+    const focusCell = cells.find((c) => cellContainsParaId(c, focusParaId));
     if (focusCell) {
       focusRow = focusCell.row;
       focusCol = focusCell.col;
@@ -121,6 +149,7 @@ export function readTableGridFromView(view: EditorView): TableGrid | null {
     cols: maxCols,
     focusRow,
     focusCol,
+    focusParaId: focusParaId || undefined,
     cells,
   };
 }

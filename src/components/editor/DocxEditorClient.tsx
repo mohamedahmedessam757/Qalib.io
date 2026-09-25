@@ -79,7 +79,10 @@ import {
   TableSelectionEditSheet,
   type TableSelectionDraft,
 } from "./TableSelectionEditSheet";
-import { readTableGridFromEditor } from "@/lib/editor/read-table-grid";
+import {
+  cellContainsParaId,
+  readTableGridFromEditor,
+} from "@/lib/editor/read-table-grid";
 import {
   ParagraphJumpSheet,
   type ParagraphJumpItem,
@@ -367,7 +370,8 @@ export function DocxEditorClient({
   const openSelectionSheet = useCallback(() => {
     const editor = editorRef.current;
     const info = editor?.getSelectionInfo();
-    if (!info?.paraId) {
+    const paraId = info?.paraId;
+    if (!paraId) {
       toast.message(t("editSelectionHint"));
       return;
     }
@@ -375,14 +379,41 @@ export function DocxEditorClient({
       () => editor?.getEditorRef()?.getView() ?? null,
     );
     if (grid) {
-      setTableDraft(grid);
+      const focusCell =
+        grid.cells.find((c) => cellContainsParaId(c, paraId)) ||
+        grid.cells.find(
+          (c) => c.row === grid.focusRow && c.col === grid.focusCol,
+        );
+
+      // Layout tables often pack many body paragraphs into one cell. Opening the
+      // grid for those always felt "stuck" on the first (letterhead) line — edit
+      // the tapped paragraph directly instead.
+      const multiParaCell = (focusCell?.paraIds?.length ?? 0) > 1;
+      if (multiParaCell) {
+        setDraft({
+          paraId,
+          paragraphText: info.paragraphText || info.selectedText || "",
+          selectedText: info.selectedText || "",
+        });
+        setTableSheetOpen(false);
+        setTableDraft(null);
+        setSheetOpen(true);
+        return;
+      }
+
+      setTableDraft({
+        ...grid,
+        focusRow: focusCell?.row ?? grid.focusRow,
+        focusCol: focusCell?.col ?? grid.focusCol,
+        focusParaId: paraId,
+      });
       setTableSheetOpen(true);
       setSheetOpen(false);
       setDraft(null);
       return;
     }
     setDraft({
-      paraId: info.paraId,
+      paraId,
       paragraphText: info.paragraphText || info.selectedText || "",
       selectedText: info.selectedText || "",
     });
@@ -406,11 +437,12 @@ export function DocxEditorClient({
           () => editor?.getEditorRef()?.getView() ?? null,
         ),
       );
-      const selected = Boolean(info.selectedText?.trim()) || inTable;
-      setMobileHasSelection(selected);
-      // Never stack the paragraph sheet on top of an open table sheet.
+      const hasTextSelection = Boolean(info.selectedText?.trim());
+      // Highlight the edit affordance in tables, but do not auto-open the sheet
+      // on a bare caret — layout tables would trap the user on one cell.
+      setMobileHasSelection(hasTextSelection || inTable);
       if (tableSheetOpen || sheetOpen) return;
-      if (!selected) return;
+      if (!hasTextSelection) return;
       openSelectionSheet();
     }, 280);
   }, [isMobile, openSelectionSheet, sheetOpen, tableSheetOpen]);
@@ -738,10 +770,19 @@ export function DocxEditorClient({
       const nextText = matrix[cell.row]?.[cell.col] ?? "";
       const prevText = cell.text;
       if (nextText === prevText) continue;
-      const ok = replaceParagraphText(editor, cell.paraId, nextText);
-      if (!ok) {
-        toast.error(t("applyError"));
-        return;
+      const paraIds =
+        cell.paraIds?.length > 0 ? cell.paraIds : [cell.paraId];
+      const lines = nextText.split("\n");
+      for (let i = 0; i < paraIds.length; i += 1) {
+        const line =
+          i < paraIds.length - 1
+            ? (lines[i] ?? "")
+            : lines.slice(i).join("\n");
+        const ok = replaceParagraphText(editor, paraIds[i]!, line);
+        if (!ok) {
+          toast.error(t("applyError"));
+          return;
+        }
       }
       applied += 1;
     }
@@ -757,17 +798,26 @@ export function DocxEditorClient({
   function onClearTableCell(paraId: string) {
     const editor = editorRef.current;
     if (!editor) return;
-    const ok = replaceParagraphText(editor, paraId, "");
-    if (!ok) {
-      toast.error(t("applyError"));
-      return;
+    const cell = tableDraft?.cells.find(
+      (c) => cellContainsParaId(c, paraId) || c.paraId === paraId,
+    );
+    const paraIds =
+      cell && cell.paraIds?.length > 0 ? cell.paraIds : [paraId];
+    for (const id of paraIds) {
+      const ok = replaceParagraphText(editor, id, "");
+      if (!ok) {
+        toast.error(t("applyError"));
+        return;
+      }
     }
     setTableDraft((prev) => {
       if (!prev) return prev;
       return {
         ...prev,
         cells: prev.cells.map((c) =>
-          c.paraId === paraId ? { ...c, text: "" } : c,
+          cellContainsParaId(c, paraId) || c.paraId === paraId
+            ? { ...c, text: "" }
+            : c,
         ),
       };
     });
@@ -802,13 +852,19 @@ export function DocxEditorClient({
 
     if (item.kind === "table" && item.cells?.length && item.rows && item.cols) {
       const focus =
-        item.cells.find((c) => c.paraId === item.paraId) || item.cells[0]!;
+        item.cells.find((c) =>
+          item.paraId ? cellContainsParaId(c, item.paraId) : false,
+        ) || item.cells[0]!;
       setTableDraft({
         rows: item.rows,
         cols: item.cols,
         focusRow: focus.row,
         focusCol: focus.col,
-        cells: item.cells,
+        focusParaId: item.paraId,
+        cells: item.cells.map((c) => ({
+          ...c,
+          paraIds: c.paraIds?.length ? c.paraIds : [c.paraId],
+        })),
       });
       setTableSheetOpen(true);
       setSheetOpen(false);

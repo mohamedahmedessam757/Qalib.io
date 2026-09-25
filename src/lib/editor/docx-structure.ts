@@ -1,4 +1,3 @@
-import { getVanillaNodeText } from "@eigenpal/docx-editor-core/prosemirror/paraText";
 import type { Node as PmNode } from "prosemirror-model";
 import type { EditorView } from "prosemirror-view";
 import type { DocxCanvasHandle } from "@/components/editor/DocxCanvas";
@@ -8,6 +7,7 @@ import {
   listDocumentParagraphs,
 } from "@/lib/ai/direct-doc-edit";
 import {
+  paragraphsInCell,
   readTableGridFromView,
   type TableCellInfo,
 } from "@/lib/editor/read-table-grid";
@@ -63,19 +63,6 @@ function truncateLabel(text: string, max = 48): string {
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
-function paragraphInCell(cell: PmNode): { paraId: string; text: string } | null {
-  let hit: { paraId: string; text: string } | null = null;
-  cell.descendants((node) => {
-    if (hit) return false;
-    if (!node.isTextblock) return true;
-    const paraId = String(node.attrs?.paraId || "").trim();
-    if (!paraId) return true;
-    hit = { paraId, text: getVanillaNodeText(node) || "" };
-    return false;
-  });
-  return hit;
-}
-
 function readTableAtPos(
   table: PmNode,
 ): { rows: number; cols: number; cells: TableCellInfo[]; label: string } | null {
@@ -87,13 +74,14 @@ function readTableAtPos(
     let colIndex = 0;
     rowNode.forEach((cellNode) => {
       if (!CELL_TYPES.has(cellNode.type.name)) return;
-      const para = paragraphInCell(cellNode);
-      if (para) {
+      const paras = paragraphsInCell(cellNode);
+      if (paras.length) {
         cells.push({
           row: rowIndex,
           col: colIndex,
-          paraId: para.paraId,
-          text: para.text,
+          paraId: paras[0]!.paraId,
+          paraIds: paras.map((p) => p.paraId),
+          text: paras.map((p) => p.text).join("\n"),
         });
       }
       colIndex += 1;
@@ -136,7 +124,10 @@ export function collectDocxStructure(
       if (node.type.name === "table") {
         const grid = readTableAtPos(node);
         if (grid) {
-          for (const c of grid.cells) tableParaIds.add(c.paraId);
+          for (const c of grid.cells) {
+            tableParaIds.add(c.paraId);
+            for (const id of c.paraIds || []) tableParaIds.add(id);
+          }
           const anchor = grid.cells[0]?.paraId || `table_${pos}`;
           items.push({
             id: `table:${anchor}`,
