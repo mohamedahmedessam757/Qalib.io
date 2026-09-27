@@ -33,6 +33,23 @@ export function isDocxFile(file: { name: string; type: string }) {
   );
 }
 
+/** Legacy Word 97-2003 binary; converted to .docx in the browser before upload. */
+export function isDocFile(file: { name: string; type: string }) {
+  const lower = file.name.toLowerCase();
+  if (!lower.endsWith(".doc")) return false;
+  if (isGenericOrEmptyMime(file.type)) return true;
+  const t = file.type.toLowerCase();
+  return (
+    t === "application/msword" ||
+    t === "application/vnd.ms-word" ||
+    t === "application/x-msword" ||
+    t === "application/doc" ||
+    t === "application/rtf" ||
+    t === "text/rtf" ||
+    t === DOCX_MIME
+  );
+}
+
 export function isPdfFile(file: { name: string; type: string }) {
   const lower = file.name.toLowerCase();
   if (!lower.endsWith(".pdf")) return false;
@@ -51,13 +68,15 @@ export function isXlsxFile(file: { name: string; type: string }) {
 }
 
 export function isSupportedUpload(file: { name: string; type: string }) {
-  return isDocxFile(file) || isPdfFile(file) || isXlsxFile(file);
+  return (
+    isDocxFile(file) || isDocFile(file) || isPdfFile(file) || isXlsxFile(file)
+  );
 }
 
 export function sanitizeTitle(name: string) {
   return (
     name
-      .replace(/\.docx$/i, "")
+      .replace(/\.docx?$/i, "")
       .replace(/\.pdf$/i, "")
       .replace(/\.xlsx$/i, "")
       .slice(0, 180) || "document"

@@ -102,6 +102,8 @@ export function DocumentsClient({ initialDocs }: { initialDocs: Doc[] }) {
   const router = useRouter();
   const [docs, setDocs] = useState(initialDocs);
   const [uploading, setUploading] = useState(false);
+  const [converting, setConverting] = useState(false);
+  const uploadingLabel = converting ? t("converting") : t("uploading");
   const [creating, setCreating] = useState<"docx" | "pdf" | "xlsx" | null>(
     null,
   );
@@ -131,8 +133,14 @@ export function DocumentsClient({ initialDocs }: { initialDocs: Doc[] }) {
     }
 
     setUploading(true);
+    let converted = false;
     try {
-      const created = await uploadNewDocumentFile(file);
+      const created = await uploadNewDocumentFile(file, {
+        onPhase: (phase) => {
+          if (phase === "converting") converted = true;
+          setConverting(phase === "converting");
+        },
+      });
       setDocs((prev) => [
         {
           id: created.id,
@@ -143,18 +151,36 @@ export function DocumentsClient({ initialDocs }: { initialDocs: Doc[] }) {
         },
         ...prev,
       ]);
-      toast.success(t("uploadSuccess"));
+      toast.success(converted ? t("convertSuccess") : t("uploadSuccess"));
       router.push(editorHref(created));
     } catch (err) {
       if (err instanceof DocumentUploadError) {
         if (err.code === "too_large") toast.error(t("tooLarge"));
         else if (err.code === "invalid_type") toast.error(t("invalidType"));
-        else toast.error(t("uploadError"));
+        else if (err.code === "conversion") {
+          switch (err.conversionReason) {
+            case "encrypted":
+              toast.error(t("convertEncrypted"));
+              break;
+            case "unsupported_version":
+              toast.error(t("convertOldVersion"));
+              break;
+            case "rtf":
+              toast.error(t("convertRtf"));
+              break;
+            case "not_word":
+              toast.error(t("convertNotWord"));
+              break;
+            default:
+              toast.error(t("convertCorrupt"));
+          }
+        } else toast.error(t("uploadError"));
       } else {
         toast.error(err instanceof Error ? err.message : t("uploadError"));
       }
     } finally {
       setUploading(false);
+      setConverting(false);
       if (inputRef.current) inputRef.current.value = "";
     }
   }
@@ -309,7 +335,7 @@ export function DocumentsClient({ initialDocs }: { initialDocs: Doc[] }) {
           id={uploadInputId}
           ref={inputRef}
           type="file"
-          accept=".docx,.pdf,.xlsx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          accept=".docx,.doc,.pdf,.xlsx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           className="sr-only"
           disabled={uploading}
           onChange={(e) => {
@@ -331,7 +357,7 @@ export function DocumentsClient({ initialDocs }: { initialDocs: Doc[] }) {
           ) : (
             <Upload className="h-4 w-4" />
           )}
-          {uploading ? t("uploading") : t("upload")}
+          {uploading ? uploadingLabel : t("upload")}
         </label>
         <Button
           variant="ghost"
@@ -397,13 +423,13 @@ export function DocumentsClient({ initialDocs }: { initialDocs: Doc[] }) {
           <FileUp className="mb-2 h-6 w-6 opacity-80" />
         )}
         <p className="text-sm font-medium text-foreground md:hidden">
-          {uploading ? t("uploading") : t("dropTitleMobile")}
+          {uploading ? uploadingLabel : t("dropTitleMobile")}
         </p>
         <p className="mt-1 max-w-sm text-xs md:hidden">
           {uploading ? "" : t("dropBodyMobile")}
         </p>
         <p className="hidden text-sm font-medium text-foreground md:block">
-          {uploading ? t("uploading") : t("dropTitle")}
+          {uploading ? uploadingLabel : t("dropTitle")}
         </p>
         <p className="mt-1 hidden max-w-sm text-xs md:block">
           {uploading ? "" : t("dropBody")}

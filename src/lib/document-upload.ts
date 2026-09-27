@@ -3,8 +3,10 @@
  * files never hit the Vercel request-body 413 limit (and upload faster).
  */
 
+import type { DocConvertErrorCode } from "@/lib/doc-convert";
 import {
   DOCX_MIME,
+  isDocFile,
   isDocxFile,
   isPdfFile,
   isXlsxFile,
@@ -34,7 +36,9 @@ export class DocumentUploadError extends Error {
       | "network"
       | "storage"
       | "register"
+      | "conversion"
       | "unknown" = "unknown",
+    readonly conversionReason?: DocConvertErrorCode,
   ) {
     super(message);
     this.name = "DocumentUploadError";
@@ -118,19 +122,58 @@ async function putToSignedUrl(opts: {
   }
 }
 
+export type UploadPhase = "converting" | "uploading";
+
+/** Converts a legacy .doc into a .docx File locally (lazy-loaded converter). */
+async function convertLegacyDoc(file: File): Promise<File> {
+  const { convertDocToDocx, DocConvertError } = await import(
+    "@/lib/doc-convert"
+  );
+  try {
+    const { bytes } = await convertDocToDocx(await file.arrayBuffer());
+    const name = file.name.replace(/\.doc$/i, "") + ".docx";
+    return new File([bytes as BlobPart], name, {
+      type: DOCX_MIME,
+      lastModified: file.lastModified,
+    });
+  } catch (err) {
+    if (err instanceof DocConvertError) {
+      throw new DocumentUploadError(err.message, "conversion", err.code);
+    }
+    throw new DocumentUploadError(
+      err instanceof Error ? err.message : "Conversion failed",
+      "conversion",
+      "corrupt",
+    );
+  }
+}
+
 /**
  * New library upload: sign → direct storage PUT → register row.
  * Body never goes through /api/documents FormData (avoids 413).
+ * Legacy .doc files are converted to .docx in the browser first.
  */
 export async function uploadNewDocumentFile(
-  file: File,
+  input: File,
+  opts: { onPhase?: (phase: UploadPhase) => void } = {},
 ): Promise<UploadedDocument> {
-  if (file.size <= 0) {
+  if (input.size <= 0) {
     throw new DocumentUploadError("Empty file", "invalid_type");
   }
-  if (file.size > MAX_UPLOAD_BYTES) {
+  if (input.size > MAX_UPLOAD_BYTES) {
     throw new DocumentUploadError("File too large", "too_large");
   }
+
+  let file = input;
+  if (isDocFile(input)) {
+    opts.onPhase?.("converting");
+    file = await convertLegacyDoc(input);
+    if (file.size > MAX_UPLOAD_BYTES) {
+      throw new DocumentUploadError("File too large", "too_large");
+    }
+  }
+  opts.onPhase?.("uploading");
+
   const mimeType = mimeForFile(file);
   if (!mimeType) {
     throw new DocumentUploadError("Invalid file type", "invalid_type");
