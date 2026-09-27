@@ -329,7 +329,7 @@ export function DocumentsClient({ initialDocs }: { initialDocs: Doc[] }) {
     duplicatingId !== null;
 
   return (
-    <div>
+    <div className="min-w-0">
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <input
           id={uploadInputId}
@@ -459,7 +459,7 @@ export function DocumentsClient({ initialDocs }: { initialDocs: Doc[] }) {
             key="list"
             initial={false}
             animate={{ y: 0 }}
-            className="grid gap-3"
+            className="grid min-w-0 grid-cols-1 gap-3"
           >
             {docs.map((doc, index) => {
               const pdf = isPdfMime(doc.mimeType);
@@ -479,7 +479,7 @@ export function DocumentsClient({ initialDocs }: { initialDocs: Doc[] }) {
                     delay: Math.min(index * 0.04, 0.2),
                     ease: easeOut,
                   }}
-                  className="glass group flex flex-col gap-3 rounded-2xl px-4 py-4 transition-[border-color,transform,background-color] duration-200 hover:border-accent/35 hover:bg-white/[0.06] sm:flex-row sm:items-center sm:justify-between"
+                  className="glass group flex min-w-0 flex-col gap-3 rounded-2xl px-4 py-4 transition-[border-color,transform,background-color] duration-200 hover:border-accent/35 hover:bg-white/[0.06] sm:flex-row sm:items-center sm:justify-between"
                 >
                   <div className="flex min-w-0 items-start gap-3">
                     <span className="mt-0.5 grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-accent-soft text-accent">
@@ -491,10 +491,12 @@ export function DocumentsClient({ initialDocs }: { initialDocs: Doc[] }) {
                         <FolderOpen className="h-4 w-4" />
                       )}
                     </span>
-                    <div className="min-w-0">
-                      <p className="truncate font-medium">{doc.title}</p>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-medium" title={doc.title}>
+                        {doc.title}
+                      </p>
                       <p
-                        className="mt-1 font-mono text-xs text-muted"
+                        className="mt-1 truncate font-mono text-xs text-muted"
                         suppressHydrationWarning
                       >
                         {pdf ? "PDF" : xlsx ? "Excel" : "Word"} · {t("updated")}:{" "}
